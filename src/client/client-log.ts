@@ -239,7 +239,6 @@ function wsStates(): { CONNECTING: number; OPEN: number; CLOSED: number } {
 
 function attachAuraClientSocketLifecycle(ws: WebSocketLike, url: string): void {
   const onOpen = () => {
-    console.log(`auralogger: [AuraClient] websocket open — ${url}`);
     bumpSocketIdleTimer(ws);
   };
   const onClose = () => {
@@ -248,7 +247,6 @@ function attachAuraClientSocketLifecycle(ws: WebSocketLike, url: string): void {
       socket = null;
       socketUrl = null;
     }
-    console.log(`auralogger: [AuraClient] websocket closed — ${url}`);
   };
   const onErr = (...args: unknown[]) => {
     const first = args[0];
@@ -311,7 +309,6 @@ function createWebSocket(url: string): WebSocketLike | null {
 }
 
 function connectSocket(url: string): WebSocketLike | null {
-  console.log(`auralogger: [AuraClient] websocket connecting — ${url}`);
   const ws = createWebSocket(url);
   if (!ws) {
     return null;
