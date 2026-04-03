@@ -1,0 +1,111 @@
+{
+  "name": "auralogger-cli",
+  "version": "1.0.1",
+  "description": "Real-time logging and observability SDK and CLI for streaming, storing, searching, and filtering application logs—beautifully visualized and accessible from anywhere in the world across terminal, web, and any screen.",
+  "keywords": [
+    "auralogger",
+    "auralogger-cli",
+    "logger",
+    "logs",
+    "logging",
+    "logging-cli",
+    "cli",
+    "typescript",
+    "nextjs",
+    "next.js",
+    "vite",
+    "websocket",
+    "real-time",
+    "remote-logging",
+    "browser-logging",
+    "structured-logging",
+    "observability",
+    "devtools",
+    "debugging",
+    "agents",
+    "agentic-logger"
+  ],
+  "homepage": "https://auralogger.com",
+  "bugs": {
+    "url": "https://github.com/Beever-Labs/auralogger-node/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Beever-Labs/auralogger-node.git"
+  },
+  "license": "ISC",
+  "author": {
+    "name": "Bhanu Vardhan Reddy Nanavala",
+    "email": "nbhanuvardhanreddy@gmail.com"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "browser": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.browser.js"
+      },
+      "node": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
+    },
+    "./server": {
+      "browser": {
+        "types": "./dist/server.browser.d.ts",
+        "default": "./dist/server.browser.js"
+      },
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    },
+    "./init": {
+      "types": "./dist/init.d.ts",
+      "default": "./dist/init.js"
+    },
+    "./server-check": {
+      "types": "./dist/server-check.d.ts",
+      "default": "./dist/server-check.js"
+    },
+    "./client-check": {
+      "types": "./dist/client-check.d.ts",
+      "default": "./dist/client-check.js"
+    }
+  },
+  "bin": {
+    "auralogger": "dist/cli/bin/auralogger.js"
+  },
+  "files": [
+    "dist",
+    "readme.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
+    "prepare": "npm run build",
+    "test": "npm run build && node dist/cli/bin/auralogger.js test-serverlog"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "dotenv": "^17.3.1",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

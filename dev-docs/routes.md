@@ -1,0 +1,62 @@
+# Routes map (HTTP + WebSocket)
+
+Routes used by the Node CLI/SDK and where to update them.
+
+## Base URLs
+
+- **HTTP** (`/api/*`):
+  - Env: **`AURALOGGER_API_URL`**
+  - Code: **`src/utils/backend-origin.ts`** → **`resolveApiBaseUrl()`**
+  - Default web origin: **`https://auralogger.com`** (see source for API host defaults)
+
+- **WebSocket**:
+  - Env: **`AURALOGGER_WS_URL`**
+  - Code: **`src/utils/backend-origin.ts`** → **`resolveWsBaseUrl()`**
+  - Default derives from hosted API origin (see **`DEFAULT_AURALOGGER_ORIGIN`** in source)
+
+---
+
+## HTTP routes in use
+
+### `POST /api/proj_auth`
+
+- **Used by:** **`auralogger init`**, **`AuraServer`** sync path (via shared fetch helpers in **`cli/services/init.ts`** and server log)
+- **Purpose:** authenticate with secret; receive project id, session, styles
+- **Header:** **`secret`** (project secret — **`AURALOGGER_PROJECT_SECRET`** or equivalent)
+
+### `POST /api/logs`
+
+- **Used by:** **`auralogger get-logs`**
+- **File:** **`src/cli/services/get-logs.ts`**
+- **Purpose:** fetch logs with filter payload
+- **Header:** **`secret`**
+- **Body:** `{ filters: [...] }`
+
+---
+
+## WebSocket routes in use
+
+### `/{project_id}/create_log`
+
+- **Used by:**
+  - **`AuraServer`** (**`src/server/server-log.ts`**)
+  - **`auralogger server-check`** (**`src/cli/services/server-check.ts`**)
+  - **`auralogger test-serverlog`** (**`src/cli/services/test-logger.ts`**)
+- **Auth:** authenticated (secret as required by server implementation)
+
+### `/{project_id}/create_browser_logs`
+
+- **Used by:**
+  - **`AuraClient`** (**`src/client/client-log.ts`**)
+  - **`auralogger client-check`** (**`src/cli/services/client-check.ts`**)
+  - **`auralogger test-clientlog`** (**`src/cli/services/test-logger.ts`**)
+- **Auth:** none on the socket (browser-safe ingest)
+
+---
+
+## When you change API or WS behavior
+
+1. Update **`src/cli/services/*`**, **`src/server/*`**, or **`src/client/*`** as needed.
+2. If bases change, update **`src/utils/backend-origin.ts`**.
+3. Update **`dev-docs/routes.md`** (this file).
+4. If user-visible, update **`user-docs/commands.md`**, **`user-docs/environment.md`**, and the **Detailed reference** section in **`readme.md`** if it is kept in sync.

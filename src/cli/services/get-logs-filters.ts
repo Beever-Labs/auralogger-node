@@ -1,0 +1,86 @@
+import type { ParsedFilter } from "../utility/parser";
+
+/** Body filter shape for `POST /api/logs`. */
+export interface ApiLogFilter {
+  field: string;
+  op?: string;
+  value: unknown;
+}
+
+const MAX_MAXCOUNT = 100;
+
+function defaultOpForField(field: string): string {
+  if (field.startsWith("data.")) {
+    return "eq";
+  }
+  if (field === "order" || field === "maxcount" || field === "skip") {
+    return "eq";
+  }
+  if (field === "message") {
+    return "contains";
+  }
+  if (field === "location") {
+    return "in";
+  }
+  if (field === "time") {
+    return "since";
+  }
+  if (field === "type") {
+    return "in";
+  }
+  throw new Error(`Unknown filter field: ${field}`);
+}
+
+function allowedOpsForField(field: string): string[] {
+  if (field.startsWith("data.")) {
+    return ["eq"];
+  }
+  switch (field) {
+    case "type":
+      return ["in", "not-in"];
+    case "message":
+      return ["contains", "not-contains"];
+    case "location":
+      return ["in", "not-in"];
+    case "time":
+      return ["since", "from-to"];
+    case "order":
+    case "maxcount":
+    case "skip":
+      return ["eq"];
+    default:
+      return [];
+  }
+}
+
+export function normalizeAndValidateFilters(parsed: ParsedFilter[]): ApiLogFilter[] {
+  return parsed.map((filter) => {
+    const defaultOp = defaultOpForField(filter.field);
+    const allowedOps = allowedOpsForField(filter.field);
+    if (allowedOps.length === 0) {
+      throw new Error(`Unknown filter field: ${filter.field}`);
+    }
+
+    const resolvedOp = filter.op ?? defaultOp;
+    if (!allowedOps.includes(resolvedOp)) {
+      throw new Error(
+        `Invalid op '${resolvedOp}' for field '${filter.field}'. Allowed: ${allowedOps.join(", ")}`,
+      );
+    }
+
+    let value = filter.value;
+    if (filter.field === "maxcount" && typeof value === "number") {
+      value = Math.min(Math.max(0, Math.floor(value)), MAX_MAXCOUNT);
+    }
+    if (filter.field === "skip" && typeof value === "number") {
+      value = Math.max(0, Math.floor(value));
+    }
+
+    const apiFilter: ApiLogFilter = { field: filter.field, value };
+    if (resolvedOp !== defaultOp) {
+      apiFilter.op = resolvedOp;
+    }
+
+    return apiFilter;
+  });
+}
