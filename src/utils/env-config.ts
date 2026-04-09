@@ -1,5 +1,9 @@
 /** Environment variable names for Auralogger (process.env only; no file reads). */
-export const ENV_PROJECT_SECRET = "AURALOGGER_PROJECT_SECRET";
+export const ENV_PROJECT_TOKEN = "AURALOGGER_PROJECT_TOKEN";
+/** Same ciphertext token, exposed to browser bundles (Next/Vite). */
+export const ENV_NEXT_PUBLIC_PROJECT_TOKEN = `NEXT_PUBLIC_${ENV_PROJECT_TOKEN}`;
+export const ENV_VITE_PROJECT_TOKEN = `VITE_${ENV_PROJECT_TOKEN}`;
+export const ENV_USER_SECRET = "AURALOGGER_USER_SECRET";
 
 // Public env vars (must be visible to client bundles).
 // - Next.js exposes `NEXT_PUBLIC_*` to the browser.
@@ -51,8 +55,16 @@ export function getResolvedStylesKey(): string[] {
   return publicEnvKeys(ENV_PROJECT_STYLES);
 }
 
-export function getResolvedSecret(): string | undefined {
-  return trimEnv(ENV_PROJECT_SECRET);
+export function getResolvedProjectToken(): string | undefined {
+  return (
+    trimEnv(ENV_PROJECT_TOKEN) ??
+    trimEnv(ENV_NEXT_PUBLIC_PROJECT_TOKEN) ??
+    trimEnv(ENV_VITE_PROJECT_TOKEN)
+  );
+}
+
+export function getResolvedUserSecret(): string | undefined {
+  return trimEnv(ENV_USER_SECRET);
 }
 
 export function getResolvedProjectId(): string | undefined {
@@ -104,14 +116,24 @@ export function parseResolvedStylesOrThrow(): unknown[] {
   }
 }
 
-export function requireProjectSecretForCli(): string {
-  const s = getResolvedSecret();
-  if (!s) {
+export function requireProjectTokenForCli(): string {
+  const token = getResolvedProjectToken();
+  if (!token) {
     throw new Error(
-      `Missing ${ENV_PROJECT_SECRET} — add it to .env (or your shell), or run auralogger init and paste when asked.`,
+      `Missing ${ENV_PROJECT_TOKEN} (or ${ENV_NEXT_PUBLIC_PROJECT_TOKEN} / ${ENV_VITE_PROJECT_TOKEN}) — add it to .env (or your shell), or run auralogger init and paste when asked.`,
     );
   }
-  return s;
+  return token;
+}
+
+export function requireUserSecretForCli(): string {
+  const userSecret = getResolvedUserSecret();
+  if (!userSecret) {
+    throw new Error(
+      `Missing ${ENV_USER_SECRET} — add it to .env (or your shell), or run auralogger init and paste when asked.`,
+    );
+  }
+  return userSecret;
 }
 
 export function requireProjectIdForCli(): string {
@@ -134,16 +156,11 @@ export function requireProjectSessionForCli(): string {
   return session;
 }
 
-/** True when all four variables are set and styles JSON parses to an array. */
+/** True when project token, user secret, and session are set (id/styles optional — SDKs can hydrate via proj_auth). */
 export function isFullRuntimeEnvConfigured(): boolean {
-  if (
-    !getResolvedSecret() ||
-    !getResolvedProjectId() ||
-    !getResolvedSession()
-  ) {
-    return false;
-  }
-  return tryParseResolvedStyles() !== null;
+  return Boolean(
+    getResolvedProjectToken() && getResolvedUserSecret() && getResolvedSession(),
+  );
 }
 
 /**

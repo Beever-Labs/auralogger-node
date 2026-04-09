@@ -2,80 +2,136 @@ import * as readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import chalk from "chalk";
 
-import { loadCliEnvFiles } from "../utility/cli-load-env";
-import { printAside } from "../utility/cli-tone";
-import { resolveApiBaseUrl } from "../../utils/backend-origin";
 import {
-  ENV_PROJECT_SECRET,
+  INIT_ALREADY_LOKI_ASIDES,
+  INIT_ALREADY_STEVE_ASIDES,
+  INIT_ALREADY_STRANGE_ASIDES,
+  INIT_CURTAIN_TONY_ASIDES,
+  INIT_REPEAT_INTENT_ASIDES,
+  INIT_SESSION_TONY_ASIDES,
+  INIT_SNIPPET_DEADPOOL_ASIDES,
+  INIT_SNIPPET_PETER_ASIDES,
+  INIT_SNIPPET_THOR_ASIDES,
+  INIT_SNIPPET_WOLVERINE_ASIDES,
+  INIT_STRANGE_TOKEN_ASIDES,
+  INIT_WELCOME_ASIDES,
+  PROMPT_MISSING_CREDENTIAL_TEMPLATES,
+  formatAsideTemplate,
+  ENV_RECOVERY_HINT_PLAIN,
+  pickAside,
+} from "../utility/aside-pools";
+import { loadCliEnvFiles } from "../utility/cli-load-env";
+import { getCommandAttemptCount } from "../utility/cli-personality-state";
+import { maybePrintGenericSpice, printAside, printAsideMaybe } from "../utility/cli-tone";
+import { buildProjAuthUrl, resolveApiBaseUrl } from "../../utils/backend-origin";
+import {
+  ENV_NEXT_PUBLIC_PROJECT_TOKEN,
+  ENV_PROJECT_SESSION,
+  ENV_PROJECT_TOKEN,
+  ENV_USER_SECRET,
+  ENV_VITE_PROJECT_TOKEN,
   formatDotenvLine,
-  getResolvedProjectId,
-  getResolvedSecret,
+  getResolvedProjectToken,
   getResolvedSession,
-  tryParseResolvedStyles,
+  getResolvedUserSecret,
 } from "../../utils/env-config";
 import { parseErrorBody } from "../../utils/http-utils";
-import { buildStyleEntriesFromApi } from "../utility/log-styles";
+import { buildStyleEntriesFromProjAuth } from "../utility/log-styles";
 import type { ProjAuthConfigPayload } from "../utility/log-styles";
 
 interface ProjAuthResponse {
   project_id?: string | null;
+  project_name?: string | null;
   session?: string | null;
   styles?: unknown;
 }
 
-async function promptForSecret(): Promise<string> {
+function printMissingCredentialHint(envKey: string): void {
+  console.log("");
+  const t = pickAside(PROMPT_MISSING_CREDENTIAL_TEMPLATES);
+  printAside(t.emoji, formatAsideTemplate(t.line, { envKey }));
+}
+
+async function promptForProjectToken(): Promise<string> {
+  printMissingCredentialHint(ENV_PROJECT_TOKEN);
   const cli = readline.createInterface({ input: stdin, output: stdout });
 
   try {
-    const enteredSecret = await cli.question(
-      chalk.cyan("🔐 ") + `Paste ${ENV_PROJECT_SECRET} (your project secret): `,
+    const enteredProjectToken = await cli.question(
+      chalk.cyan("🔐 ") + `Paste ${ENV_PROJECT_TOKEN} (your project token): `,
     );
-    const secret = enteredSecret.trim();
-    if (!secret) {
-      throw new Error("Secret cannot be empty.");
+    const projectToken = enteredProjectToken.trim();
+    if (!projectToken) {
+      throw new Error(`Project token cannot be empty. ${ENV_RECOVERY_HINT_PLAIN}`);
     }
-    return secret;
+    return projectToken;
   } finally {
     cli.close();
   }
 }
 
-/** Secret from env or interactive prompt (used by `init`, `get-logs`, and any CLI path that calls proj_auth). */
-export async function resolveSecretForInit(): Promise<string> {
-  const envSecret = getResolvedSecret();
-  if (envSecret) {
-    return envSecret;
+async function promptForUserSecret(): Promise<string> {
+  printMissingCredentialHint(ENV_USER_SECRET);
+  const cli = readline.createInterface({ input: stdin, output: stdout });
+
+  try {
+    const enteredUserSecret = await cli.question(
+      chalk.cyan("🙍 ") + `Paste ${ENV_USER_SECRET} (your user secret): `,
+    );
+    const userSecret = enteredUserSecret.trim();
+    if (!userSecret) {
+      throw new Error(`User secret cannot be empty. ${ENV_RECOVERY_HINT_PLAIN}`);
+    }
+    return userSecret;
+  } finally {
+    cli.close();
   }
-  return promptForSecret();
+}
+
+/** Project token from env or interactive prompt. */
+export async function resolveProjectTokenForInit(): Promise<string> {
+  const envProjectToken = getResolvedProjectToken();
+  if (envProjectToken) {
+    return envProjectToken;
+  }
+  return promptForProjectToken();
+}
+
+/** User secret from env or interactive prompt. */
+export async function resolveUserSecretForInit(): Promise<string> {
+  const envUserSecret = getResolvedUserSecret();
+  if (envUserSecret) {
+    return envUserSecret;
+  }
+  return promptForUserSecret();
 }
 
 export interface InitConfigPayload extends ProjAuthConfigPayload {
-  secret_key: string;
+  project_token: string;
 }
 
 function buildConfigPayload(
   authResponse: ProjAuthResponse,
-  secret: string,
+  projectToken: string,
 ): InitConfigPayload {
-  const apiRows = Array.isArray(authResponse.styles) ? authResponse.styles : [];
   return {
-    secret_key: secret,
+    project_token: projectToken,
     project_id: authResponse.project_id ?? null,
+    project_name: authResponse.project_name ?? null,
     session: authResponse.session ?? null,
-    styles: buildStyleEntriesFromApi(apiRows),
+    styles: buildStyleEntriesFromProjAuth(authResponse.styles),
   };
 }
 
-export async function fetchProjAuthConfig(secret: string): Promise<InitConfigPayload> {
+export async function fetchProjAuthConfig(projectToken: string): Promise<InitConfigPayload> {
   const baseUrl = resolveApiBaseUrl();
 
-  const response = await fetch(`${baseUrl}/api/proj_auth`, {
+  const response = await fetch(buildProjAuthUrl(baseUrl, projectToken), {
     method: "POST",
-    headers: { secret },
   }).catch((error: unknown) => {
     const msg = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Can't reach Auralogger right now — check your network or VPN, then try again. (${msg})`,
+      `Can't reach Auralogger right now — check your network or VPN, then try again. (${msg}) ${ENV_RECOVERY_HINT_PLAIN}`,
     );
   });
 
@@ -88,31 +144,37 @@ export async function fetchProjAuthConfig(secret: string): Promise<InitConfigPay
   });
 
   if (!isPlainAuthResponse(authResponse)) {
-    throw new Error("The reply didn’t look right. Run auralogger init again or double-check your secret.");
+    throw new Error(
+      `The reply didn’t look right. Double-check ${ENV_PROJECT_TOKEN} or run npx auralogger init.`,
+    );
   }
 
-  return buildConfigPayload(authResponse, secret);
+  return buildConfigPayload(authResponse, projectToken);
 }
 
 /**
- * Same credential model as `AuraServer.syncFromSecret`: only the secret must be
- * available locally; id + session come from `POST /api/proj_auth`.
+ * Same credential model as `AuraServer.syncFromSecret`: only the project token
+ * must be available locally; id + session come from `POST /api/{project_token}/proj_auth`.
  */
 export async function resolveProjectContextForCliChecks(): Promise<{
-  secret: string;
+  projectToken: string;
+  userSecret: string;
   projectId: string;
+  projectName: string;
   session: string;
 }> {
-  const secret = await resolveSecretForInit();
-  const payload = await fetchProjAuthConfig(secret);
+  const projectToken = await resolveProjectTokenForInit();
+  const userSecret = await resolveUserSecretForInit();
+  const payload = await fetchProjAuthConfig(projectToken);
   const projectId = payload.project_id?.trim() ?? "";
+  const projectName = payload.project_name?.trim() ?? "";
   const session = payload.session?.trim() ?? "";
   if (!projectId || !session) {
     throw new Error(
-      `${ENV_PROJECT_SECRET} looks off, or the API didn’t return project id + session — try auralogger init.`,
+      `${ENV_PROJECT_TOKEN} looks off, or the API didn’t return project id + session — ${ENV_RECOVERY_HINT_PLAIN}`,
     );
   }
-  return { secret, projectId, session };
+  return { projectToken, userSecret, projectId, projectName, session };
 }
 
 function isPlainAuthResponse(value: unknown): value is ProjAuthResponse {
@@ -135,20 +197,18 @@ function buildAuraClientWrapperSnippet(): string {
     `function ensureConfigured(): void {`,
     `  if (configured) return`,
     ``,
-    `  const projectId = process.env.NEXT_PUBLIC_AURALOGGER_PROJECT_ID`,
-    `  if (!projectId) {`,
-    `    throw new Error('Missing NEXT_PUBLIC_AURALOGGER_PROJECT_ID')`,
+    `  // AuraClient only needs the project token; it hydrates via POST /api/{project_token}/proj_auth (token in path).`,
+    `  // You can also use hardcoded strings instead of env lookups below (avoid committing real values).`,
+    `  const projectToken = process.env.NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN`,
+    `  if (!projectToken) {`,
+    `    throw new Error('Missing NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN')`,
     `  }`,
     ``,
-    `  AuraClient.configure({`,
-    `    projectId,`,
-    `    session: process.env.NEXT_PUBLIC_AURALOGGER_PROJECT_SESSION ?? null,`,
-    `    styles: process.env.NEXT_PUBLIC_AURALOGGER_PROJECT_STYLES,`,
-    `  })`,
+    `  AuraClient.configure({ projectToken })`,
     `  configured = true`,
     `}`,
     ``,
-    `/** Browser-safe: no project secret. Configure via NEXT_PUBLIC_AURALOGGER_* env vars. */`,
+    `/** Browser-safe: project token only. Never include user secret in client bundles. */`,
     `export function Auralog(params: AuralogParams): void {`,
     `  ensureConfigured()`,
     `  AuraClient.log(params.type, params.message, params.location, params.data)`,
@@ -172,16 +232,21 @@ function buildAuraServerWrapperSnippet(): string {
     `function ensureConfigured(): void {`,
     `  if (configured) return`,
     ``,
-    `  const secret = process.env.${ENV_PROJECT_SECRET}`,
-    `  if (!secret) {`,
-    `    throw new Error('Missing ${ENV_PROJECT_SECRET}')`,
+    `  // You can also pass string literals to AuraServer.configure(...) instead of process.env (never commit real secrets).`,
+    `  const projectToken = process.env.${ENV_PROJECT_TOKEN}`,
+    `  if (!projectToken) {`,
+    `    throw new Error('Missing ${ENV_PROJECT_TOKEN}')`,
+    `  }`,
+    `  const userSecret = process.env.${ENV_USER_SECRET}`,
+    `  if (!userSecret) {`,
+    `    throw new Error('Missing ${ENV_USER_SECRET}')`,
     `  }`,
     ``,
-    `  AuraServer.configure(secret)`,
+    `  AuraServer.configure(projectToken, userSecret)`,
     `  configured = true`,
     `}`,
     ``,
-    `/** Server-only: uses project secret from env. Do not import from client components. */`,
+    `/** Server-only: uses project token + user secret from env. Do not import from client components. */`,
     `export function AuraLog(params: AuralogParams): void {`,
     `  ensureConfigured()`,
     `  AuraServer.log(params.type, params.message, params.location, params.data)`,
@@ -193,31 +258,59 @@ function printTwoAuralogExplainer(): void {
   console.log("");
   console.log(
     chalk.bold.hex("#d2a8ff")("  🧭 ") +
-      chalk.white("Two helpers, two files: client ") +
+      chalk.white("Split the stack: ") +
       chalk.bold.white("Auralog") +
-      chalk.white(", server ") +
+      chalk.white(" (browser) vs ") +
       chalk.bold.white("AuraLog") +
-      chalk.white(" — stash each in ") +
-      chalk.bold.white("its own file") +
-      chalk.dim(" (or project)."),
+      chalk.white(" (server) — ") +
+      chalk.bold.white("two files") +
+      chalk.dim(", zero crossover episodes."),
   );
   console.log(
     chalk.gray("     ") +
       chalk.hex("#ffa657")("🎨 ") +
       chalk.bold.white("Browser / frontend") +
-      chalk.gray(" — SPA, React, Vue, etc. If you want ") +
-      chalk.white("fancy styled logs in DevTools") +
-      chalk.gray(", that’s your crew. ") +
-      chalk.dim("No secret shipped to users."),
+      chalk.gray(" — React, Vue, Next client, whatever ships to users. Want ") +
+      chalk.white("pretty DevTools logs") +
+      chalk.gray("? This side. ") +
+      chalk.dim("Project token only — never the user secret."),
   );
   console.log(
     chalk.gray("     ") +
       chalk.hex("#79c0ff")("🧱 ") +
       chalk.bold.white("Server / backend / CLI") +
-      chalk.gray(" — APIs, workers, scripts, terminal tools: not user-facing UI. ") +
-      chalk.white("The secret only exists in this server-side copy."),
+      chalk.gray(" — APIs, workers, scripts, anything that never touches a phone screen. ") +
+      chalk.white("User secret only lives here."),
   );
   console.log("");
+}
+
+/** Client + server snippets with the loud personality pass (init + already-configured paths). */
+function printInitHelperSnippetsWithCharacterVoices(): void {
+  {
+    const a = pickAside(INIT_SNIPPET_PETER_ASIDES);
+    printAside(a.emoji, a.line);
+  }
+  printCodeStory(
+    "Client-side Auralog — auralogger-cli/client",
+    buildAuraClientWrapperSnippet(),
+  );
+  {
+    const a = pickAside(INIT_SNIPPET_DEADPOOL_ASIDES);
+    printAside(a.emoji, a.line);
+  }
+  {
+    const a = pickAside(INIT_SNIPPET_WOLVERINE_ASIDES);
+    printAside(a.emoji, a.line);
+  }
+  {
+    const a = pickAside(INIT_SNIPPET_THOR_ASIDES);
+    printAside(a.emoji, a.line);
+  }
+  printCodeStory(
+    "Server-side AuraLog — auralogger-cli/server",
+    buildAuraServerWrapperSnippet(),
+  );
 }
 
 function printCodeStory(title: string, snippet: string): void {
@@ -249,182 +342,229 @@ function printCodeStory(title: string, snippet: string): void {
   console.log("");
 }
 
-function printEnvInstructions(
+function printCopyPasteEnvBlock(
   payload: InitConfigPayload,
-  secretWasAlreadyInEnv: boolean,
+  projectTokenWasAlreadyInEnv: boolean,
+  userSecretWasAlreadyInEnv: boolean,
+  sessionWasAlreadyInEnv: boolean,
+  userSecret: string,
 ): void {
-  const secretLine = formatDotenvLine(ENV_PROJECT_SECRET, payload.secret_key);
-  const styleCount = Array.isArray(payload.styles) ? payload.styles.length : 0;
-  const stylesJsonLen = JSON.stringify(payload.styles).length;
+  const session = payload.session?.trim() ?? "";
 
   console.log("");
   console.log(
-    chalk.bold.hex("#ffa657")("✨ ") +
-      chalk.bold.white("Auralogger init") +
-      chalk.dim(" — client pretty-logs + server secrets, coming right up."),
+    chalk.bold.hex("#79c0ff")("📋 ") + chalk.bold.white("Copy-paste env block"),
   );
-  printAside("🎬", "Stark: \"Jarvis, warm up the lab.\" — credentials rolling in.");
-
-  console.log("");
   console.log(
-    chalk.bold.hex("#79c0ff")("🗝️  Step 1 — ") + chalk.bold.white(ENV_PROJECT_SECRET),
+    chalk.dim(
+      "   Up to five lines when everything’s new: server token, user secret, session, then the same token for Next and Vite. Project id + DevTools styles come from proj_auth — no .env lines for those.",
+    ),
   );
-  if (secretWasAlreadyInEnv) {
-    console.log(
-      chalk.gray(
-        "   This variable was already in your environment, so you’re set: the ",
-      ) +
-        chalk.white("CLI") +
-        chalk.gray(" and ") +
-        chalk.white("AuraServer") +
-        chalk.gray(" both read the same key — no secret line printed again."),
-    );
-    printAside("🔐", "The vault was already open — we're not flashing the combo again.");
-  } else {
-    console.log(
-      chalk.gray(
-        "   You typed the secret at the prompt just now. Add a line like the one ",
-      ) +
-        chalk.bold.gray("below") +
-        chalk.gray(
-          " to a gitignored `.env` (or your host secret store) so future CLI runs and AuraServer can authenticate:",
-        ),
-    );
-    console.log("");
-    console.log(chalk.hex("#8b949e")(secretLine));
-    console.log(
-      chalk.dim("   ↑ Name is ") +
-        chalk.white(ENV_PROJECT_SECRET) +
-        chalk.dim(", value is what's in the quotes."),
-    );
-    printAside("🕷️", "Parker: I talk when I'm stressed too — carve it into .env before the wrong person hears.");
+  console.log("");
+
+  const lines: string[] = [];
+  if (!projectTokenWasAlreadyInEnv) {
+    lines.push(formatDotenvLine(ENV_PROJECT_TOKEN, payload.project_token));
+  }
+  if (!userSecretWasAlreadyInEnv) {
+    lines.push(formatDotenvLine(ENV_USER_SECRET, userSecret));
+  }
+  if (!sessionWasAlreadyInEnv && session) {
+    lines.push(formatDotenvLine(ENV_PROJECT_SESSION, session));
+  }
+  if (!projectTokenWasAlreadyInEnv) {
+    lines.push(formatDotenvLine(ENV_NEXT_PUBLIC_PROJECT_TOKEN, payload.project_token));
+    lines.push(formatDotenvLine(ENV_VITE_PROJECT_TOKEN, payload.project_token));
   }
 
+  for (const line of lines) {
+    console.log(chalk.hex("#8b949e")(line));
+  }
+
+  if (projectTokenWasAlreadyInEnv) {
+    console.log("");
+    console.log(
+      chalk.dim(
+        `   Token already in env — if your client can’t read it, add ${ENV_NEXT_PUBLIC_PROJECT_TOKEN} and ${ENV_VITE_PROJECT_TOKEN} with the same ciphertext.`,
+      ),
+    );
+  }
+
+  if (projectTokenWasAlreadyInEnv || userSecretWasAlreadyInEnv || sessionWasAlreadyInEnv) {
+    console.log("");
+    if (projectTokenWasAlreadyInEnv) {
+      console.log(
+        chalk.dim("   ") +
+          chalk.white("Project token") +
+          chalk.dim(" was already set — server/Next/Vite token lines omitted above."),
+      );
+    }
+    if (userSecretWasAlreadyInEnv) {
+      console.log(
+        chalk.dim("   ") +
+          chalk.white(ENV_USER_SECRET) +
+          chalk.dim(" was already set — omitted above."),
+      );
+    }
+    if (sessionWasAlreadyInEnv) {
+      console.log(
+        chalk.dim("   ") +
+          chalk.white(ENV_PROJECT_SESSION) +
+          chalk.dim(" was already set — omitted above."),
+      );
+    }
+  }
+  console.log("");
+}
+
+function printInitWelcomeBanner(): void {
   console.log("");
   console.log(
-    chalk.bold.hex("#79c0ff")("🎁  Step 2 — publishable trio (paste into ") +
-      chalk.white("NEXT_PUBLIC_AURALOGGER_*") +
-      chalk.bold.hex("#79c0ff")(" for the client helper)"),
+    chalk.bold.white("Auralogger init") +
+      chalk.dim(" — client pretty-logs + server secrets, coming right up."),
   );
-  console.log(
-    chalk.gray("   ") + chalk.white("projectId") + chalk.dim(" · ") + chalk.hex("#ffa657")(payload.project_id ?? "—"),
+  {
+    const a = pickAside(INIT_WELCOME_ASIDES);
+    printAside(a.emoji, a.line);
+  }
+  console.log("");
+}
+
+function printPostInitSummary(
+  payload: InitConfigPayload,
+  projectTokenWasAlreadyInEnv: boolean,
+  userSecretWasAlreadyInEnv: boolean,
+  sessionWasAlreadyInEnv: boolean,
+  userSecret: string,
+): void {
+  console.log("");
+  {
+    const a = pickAside(INIT_SESSION_TONY_ASIDES);
+    printAside(a.emoji, a.line);
+  }
+
+  printCopyPasteEnvBlock(
+    payload,
+    projectTokenWasAlreadyInEnv,
+    userSecretWasAlreadyInEnv,
+    sessionWasAlreadyInEnv,
+    userSecret,
   );
-  console.log(
-    chalk.gray("   ") + chalk.white("session") + chalk.dim(" · ") + chalk.hex("#ffa657")(payload.session ?? "—"),
-  );
-  console.log(
-    chalk.gray("   ") +
-      chalk.white("styles") +
-      chalk.dim(" · ") +
-      chalk.hex("#ffa657")(`${styleCount} entr${styleCount === 1 ? "y" : "ies"}`) +
-      chalk.dim(` (${stylesJsonLen} chars of JSON vibes)`),
-  );
-  printAside("🕶️", "Fury: \"There was an idea…\" — two files: Auralog vs AuraLog, different battle suits.");
 
   console.log("");
   printTwoAuralogExplainer();
-  printAside("🕷️", "Parker: \"Friendly neighborhood logger, sir!\" — DevTools go brrr, no Stark codes in the onesie.");
-  printCodeStory(
-    "Client-side Auralog — auralogger-cli/client",
-    buildAuraClientWrapperSnippet(),
-  );
-  printAside("⚡", "Thor: ANOTHER! …wait, this pint's classified — Asgard-only; Midgard bundles stay thirsty.");
-  printCodeStory(
-    "Server-side AuraLog — auralogger-cli/server",
-    buildAuraServerWrapperSnippet(),
-  );
+  printInitHelperSnippetsWithCharacterVoices();
 
   console.log(
     chalk.bold.hex("#f85149")("🙅 ") +
       chalk.white("Never put ") +
-      chalk.bold.white(ENV_PROJECT_SECRET) +
+      chalk.bold.white(ENV_USER_SECRET) +
       chalk.white(" in frontend bundles — only the ") +
       chalk.bold.white("server") +
       chalk.white(" AuraLog file gets that."),
   );
   console.log(
-    chalk.gray("   The ") + chalk.bold.gray("client") + chalk.gray(" Auralog is chill: pretty logs, zero skeleton keys."),
+    chalk.gray("   The ") +
+      chalk.bold.gray("client") +
+      chalk.gray(" Auralog uses project token only; proj_auth uses the token in the URL path."),
   );
-  printAside("🕷️", "Ben: With great power comes great responsibility — and zero secrets in the client bundle. Memorize that.");
   console.log("");
 }
 
 function printAlreadyConfiguredSuccess(): void {
-  if (!tryParseResolvedStyles()) {
-    return;
-  }
-
   console.log("");
   console.log(
     chalk.bold.hex("#ffa657")("🎉 ") +
-      chalk.white("Plot twist — this shell already has id, session, and styles."),
+      chalk.white("Plot twist — this shell already has token, user secret, and session."),
   );
   console.log(
     chalk.gray(
-      "   Drop-in helpers below — client reads NEXT_PUBLIC_* from your bundler; server still uses the secret from env.",
+      "   Drop-in helpers below — client reads the project token from your bundler; server uses token + user secret; id/styles can hydrate via proj_auth.",
     ),
   );
-  printAside("🔮", "Strange: I ran futures — this timeline's boring; your shell already knows the spell.");
+  {
+    const a = pickAside(INIT_ALREADY_STRANGE_ASIDES);
+    printAside(a.emoji, a.line);
+  }
   console.log("");
   printTwoAuralogExplainer();
-  printAside("🕷️", "Peter: \"New car smell!\" — client Auralog: shiny logs, not the nuclear football.");
-  printCodeStory(
-    "Client-side Auralog — auralogger-cli/client",
-    buildAuraClientWrapperSnippet(),
-  );
-  printAside("🛡️", "Barnes energy: \"I'm with you 'til the end of the line.\" — server file keeps the secret in the trench.");
-  printCodeStory(
-    "Server-side AuraLog — auralogger-cli/server",
-    buildAuraServerWrapperSnippet(),
-  );
+  printInitHelperSnippetsWithCharacterVoices();
   console.log(
-    chalk.dim("   Need a remixed session/styles? Unset those vars, then "),
+    chalk.dim("   Need a fresh session from the API? Unset ") +
+      chalk.white(ENV_PROJECT_SESSION) +
+      chalk.dim(", then "),
     chalk.hex("#79c0ff")("auralogger init"),
     chalk.dim(" again."),
   );
-  printAside("🐍", "Loki: Glorious purpose? Wipe session/styles, run init — blame the TVA if HR asks.");
+  {
+    const a = pickAside(INIT_ALREADY_LOKI_ASIDES);
+    printAside(a.emoji, a.line);
+  }
   console.log(
     chalk.dim("   Victory lap for the server pipe: "),
     chalk.hex("#79c0ff")("auralogger server-check"),
   );
-  printAside(
-    "🛡️",
-    'Rogers: "I can do this all day." — run server-check: one stubborn ping for Peggy.',
-  );
+  {
+    const a = pickAside(INIT_ALREADY_STEVE_ASIDES);
+    printAside(a.emoji, a.line);
+  }
   console.log("");
 }
 
 export async function runInit(): Promise<void> {
   loadCliEnvFiles();
 
-  const hasSecret = Boolean(getResolvedSecret());
-  const secretWasAlreadyInEnv = hasSecret;
-  const hasProjectId = Boolean(getResolvedProjectId());
-  const hasSession = Boolean(getResolvedSession());
-  const hasStyles = tryParseResolvedStyles() !== null;
+  if (getCommandAttemptCount("init") >= 2) {
+    const a = pickAside(INIT_REPEAT_INTENT_ASIDES);
+    printAsideMaybe(a.emoji, a.line, 0.12);
+  }
 
-  if (hasSecret && hasProjectId && hasSession && hasStyles) {
+  const hasProjectToken = Boolean(getResolvedProjectToken());
+  const projectTokenWasAlreadyInEnv = hasProjectToken;
+  const hasUserSecret = Boolean(getResolvedUserSecret());
+  const userSecretWasAlreadyInEnv = hasUserSecret;
+  const hasSession = Boolean(getResolvedSession());
+  const sessionWasAlreadyInEnv = hasSession;
+
+  if (hasProjectToken && hasUserSecret && hasSession) {
     printAlreadyConfiguredSuccess();
+    maybePrintGenericSpice();
     return;
   }
 
-  if (hasSecret && !hasProjectId && !hasSession && !hasStyles) {
+  printInitWelcomeBanner();
+
+  if (hasProjectToken && !hasSession) {
     console.log(
       chalk.dim("🔎 ") +
-        chalk.white(`Spotted ${ENV_PROJECT_SECRET} — grabbing the rest from home base…`),
+        chalk.white("Spotted a project token in env — grabbing the rest from home base…"),
     );
-    printAside("🔮", "Strange: \"We're in the endgame now.\" — fetching id, session, styles from the sky.");
+    {
+      const a = pickAside(INIT_STRANGE_TOKEN_ASIDES);
+      printAside(a.emoji, a.line);
+    }
   }
 
-  const secret = await resolveSecretForInit();
-  const payload = await fetchProjAuthConfig(secret);
-  printEnvInstructions(payload, secretWasAlreadyInEnv);
+  const projectToken = await resolveProjectTokenForInit();
+  const userSecret = await resolveUserSecretForInit();
+  const payload = await fetchProjAuthConfig(projectToken);
+  printPostInitSummary(
+    payload,
+    projectTokenWasAlreadyInEnv,
+    userSecretWasAlreadyInEnv,
+    sessionWasAlreadyInEnv,
+    userSecret,
+  );
   console.log(
     chalk.hex("#ffa657")("🎬 ") +
       chalk.dim("Curtain call: ") +
       chalk.hex("#79c0ff")("auralogger server-check") +
       chalk.dim(" when the server pipe should flex too."),
   );
-  printAside("🎬", "Stark: Go be a \"genius, logger, playboy philanthropist\" — we'll see you in telemetry.");
+  {
+    const a = pickAside(INIT_CURTAIN_TONY_ASIDES);
+    printAside(a.emoji, a.line);
+  }
   console.log("");
+  maybePrintGenericSpice();
 }

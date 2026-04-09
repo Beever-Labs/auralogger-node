@@ -1,10 +1,29 @@
 import chalk from "chalk";
 
-import { resolveApiBaseUrl } from "../../utils/backend-origin";
-import { tryParseResolvedStyles } from "../../utils/env-config";
+import { buildProjectLogsUrl, resolveApiBaseUrl } from "../../utils/backend-origin";
+import {
+  getResolvedProjectToken,
+  tryParseResolvedStyles,
+} from "../../utils/env-config";
+import {
+  formatAsideTemplate,
+  GET_LOGS_DEADPOOL_SCROLL_ASIDES,
+  GET_LOGS_EMPTY_ASIDES,
+  GET_LOGS_OPEN_ASIDES,
+  GET_LOGS_SKIPPED_SETUP_INTENT_ASIDES,
+  GET_LOGS_STYLES_ASIDES,
+  GET_LOGS_SUCCESS_TEMPLATES,
+  pickAside,
+  ENV_RECOVERY_HINT_PLAIN,
+} from "../utility/aside-pools";
 import { loadCliEnvFiles } from "../utility/cli-load-env";
-import { printAside } from "../utility/cli-tone";
-import { fetchProjAuthConfig, resolveSecretForInit } from "./init";
+import { getSuccessfulRunCount } from "../utility/cli-personality-state";
+import { maybePrintGenericSpice, printAside, printAsideMaybe } from "../utility/cli-tone";
+import {
+  fetchProjAuthConfig,
+  resolveProjectTokenForInit,
+  resolveUserSecretForInit,
+} from "./init";
 import { normalizeAndValidateFilters } from "./get-logs-filters";
 import { parseErrorBody } from "../../utils/http-utils";
 import { printLog } from "./log-print";
@@ -32,16 +51,18 @@ function isLogRow(value: unknown): value is LogRow {
 
 async function fetchLogsWithFallback(
   baseUrl: string,
-  secret: string,
+  projectToken: string,
+  userSecret: string,
   filters: unknown,
-): Promise<LogsResponseBody> {
-  const route = `${baseUrl}/api/logs`;
+): Promise<{ body: LogsResponseBody; logsEndpointNotFound: boolean }> {
+  const route = buildProjectLogsUrl(baseUrl, projectToken);
 
   const requestBody = JSON.stringify({ filters });
   const requestInit: RequestInit = {
     method: "POST",
     headers: {
-      secret,
+      secret: userSecret,
+      user_secret: userSecret,
       "content-type": "application/json",
     },
     body: requestBody,
@@ -50,12 +71,28 @@ async function fetchLogsWithFallback(
   const response = await fetch(route, requestInit).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Can't reach Auralogger to fetch logs — check connection and try again. (${message})`,
+      `Can't reach Auralogger to fetch logs — check connection and try again. (${message}) ${ENV_RECOVERY_HINT_PLAIN}`,
     );
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorBody(response));
+    if (response.status === 404) {
+      console.log(
+        chalk.yellow("⚠️ ") +
+          chalk.white("POST ") +
+          chalk.dim("/api/{project_token}/logs") +
+          chalk.white(
+            " returned 404 — wrong API host, old backend, or route not deployed. ",
+          ) +
+          chalk.dim("Check ") +
+          chalk.cyan("AURALOGGER_API_URL") +
+          chalk.dim("."),
+      );
+      return { body: { logs: [] }, logsEndpointNotFound: true };
+    }
+    const body = await parseErrorBody(response);
+    const authish = response.status === 401 || response.status === 403;
+    throw new Error(authish ? `${body} ${ENV_RECOVERY_HINT_PLAIN}` : body);
   }
 
   const body: unknown = await response.json().catch(() => {
@@ -64,7 +101,7 @@ async function fetchLogsWithFallback(
   if (!isRecord(body)) {
     throw new Error("The log list didn’t look right. Weird — try again.");
   }
-  return body;
+  return { body, logsEndpointNotFound: false };
 }
 
 export function formatGetLogsHelp(): string {
@@ -85,7 +122,8 @@ export function formatGetLogsHelp(): string {
 }
 
 export async function runGetLogsCore(
-  secret: string,
+  projectToken: string,
+  userSecret: string,
   configStyles: unknown,
   argv: string[],
 ): Promise<void> {
@@ -99,19 +137,27 @@ export async function runGetLogsCore(
   }
 
   const baseUrl = resolveApiBaseUrl();
-  const body = await fetchLogsWithFallback(baseUrl, secret, filters);
+  const { body, logsEndpointNotFound } = await fetchLogsWithFallback(
+    baseUrl,
+    projectToken,
+    userSecret,
+    filters,
+  );
 
   const logsRaw = body.logs;
   const logs = Array.isArray(logsRaw) ? logsRaw : [];
   if (logs.length === 0) {
+    if (logsEndpointNotFound) {
+      return;
+    }
     console.log(
       chalk.yellow("👻 ") +
-        chalk.white("Nothing matched — loosen the filters or it’s genuinely quiet."),
+        chalk.white("Nothing matched — try looser filters, smaller -skip, or bigger -maxcount; if it's a new project, maybe nothing's logged yet."),
     );
-    printAside(
-      "🪐",
-      "Drax: Why is Gamora? …I mean why is NOTHING? Loosen filters or emptiness wins.",
-    );
+    {
+      const a = pickAside(GET_LOGS_EMPTY_ASIDES);
+      printAside(a.emoji, a.line);
+    }
     return;
   }
 
@@ -123,41 +169,78 @@ export async function runGetLogsCore(
     }
   }
   if (printed > 0) {
-    printAside(
-      "🎮",
-      `Tony, peeking: "That man is playing Galaga!" — you just pulled ${printed} high score${printed === 1 ? "" : "s"} from the past.`,
-    );
+    {
+      const t = pickAside(GET_LOGS_SUCCESS_TEMPLATES);
+      printAside(
+        t.emoji,
+        formatAsideTemplate(t.line, { n: printed }),
+      );
+    }
   }
 }
 
-async function resolveGetLogsAuth(): Promise<{ secret: string; styles: unknown }> {
+async function resolveGetLogsAuth(): Promise<{
+  projectToken: string;
+  userSecret: string;
+  styles: unknown;
+}> {
   loadCliEnvFiles();
-  const secret = await resolveSecretForInit();
+  const projectToken = await resolveProjectTokenForInit();
+  const userSecret = await resolveUserSecretForInit();
   const stylesFromEnv = tryParseResolvedStyles();
   if (stylesFromEnv !== null) {
-    return { secret, styles: stylesFromEnv };
+    return { projectToken, userSecret, styles: stylesFromEnv };
   }
 
-  const payload = await fetchProjAuthConfig(secret);
-  console.log(
-    chalk.hex("#79c0ff")("🎨 ") +
-      chalk.white("No styles in your shell — using freshly fetched styling for this run."),
-  );
-  printAside(
-    "🦾",
-    "Rhodey: Next time, baby. — run init when you want the full War Machine paint on styles.",
-  );
-  return { secret, styles: payload.styles };
+  try {
+    const payload = await fetchProjAuthConfig(projectToken);
+    console.log(
+      chalk.hex("#79c0ff")("🎨 ") +
+        chalk.white("No styles in your shell — using freshly fetched styling for this run."),
+    );
+    {
+      const a = pickAside(GET_LOGS_STYLES_ASIDES);
+      printAside(a.emoji, a.line);
+    }
+    if (Math.random() < 0.35) {
+      const d = pickAside(GET_LOGS_DEADPOOL_SCROLL_ASIDES);
+      printAside(d.emoji, d.line);
+    }
+    return { projectToken, userSecret, styles: payload.styles };
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.log(
+      chalk.yellow("⚠️ ") +
+        chalk.white(
+          `Couldn’t load styles from the API (${msg}). Using default terminal colors for log lines.`,
+        ),
+    );
+    console.log(
+      chalk.dim("   Set ") +
+        chalk.cyan("AURALOGGER_PROJECT_STYLES") +
+        chalk.dim(" (or NEXT_PUBLIC_/VITE_…) from ") +
+        chalk.cyan("auralogger init") +
+        chalk.dim(" to match the dashboard, or fix API/network access."),
+    );
+    return { projectToken, userSecret, styles: undefined };
+  }
 }
 
 export async function runGetLogs(argv: string[]): Promise<void> {
+  loadCliEnvFiles();
+  if (!getResolvedProjectToken() && getSuccessfulRunCount("init") === 0) {
+    const a = pickAside(GET_LOGS_SKIPPED_SETUP_INTENT_ASIDES);
+    printAsideMaybe(a.emoji, a.line, 0.12);
+  }
+
   console.log(
     chalk.bold.hex("#79c0ff")("📜 ") + chalk.white("get-logs — opening the archive…"),
   );
-  printAside(
-    "🕶️",
-    "Fury: Last time I trusted someone I lost an eye — you steer the filters; secrets hide in headers.",
-  );
-  const { secret, styles } = await resolveGetLogsAuth();
-  await runGetLogsCore(secret, styles, argv);
+  {
+    const a = pickAside(GET_LOGS_OPEN_ASIDES);
+    printAsideMaybe(a.emoji, a.line, 0.12);
+  }
+  const { projectToken, userSecret, styles } = await resolveGetLogsAuth();
+  await runGetLogsCore(projectToken, userSecret, styles, argv);
+  maybePrintGenericSpice();
 }

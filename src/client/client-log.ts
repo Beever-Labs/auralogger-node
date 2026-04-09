@@ -1,17 +1,11 @@
-import { resolveWsBaseUrl } from "../utils/backend-origin";
+import { buildProjAuthUrl, resolveApiBaseUrl, resolveWsBaseUrl } from "../utils/backend-origin";
 import { DEFAULT_SOCKET_IDLE_CLOSE_MS } from "../utils/socket-idle-close";
-import {
-  getResolvedProjectId,
-  getResolvedSession,
-  tryParseResolvedStyles,
-} from "../utils/env-config";
-import { resolveLogStyleSpec } from "../cli/utility/log-styles";
+import { getResolvedProjectToken } from "../utils/env-config";
+import { parseErrorBody } from "../utils/http-utils";
+import { buildStyleEntriesFromProjAuth } from "../cli/utility/log-styles";
 
 export interface AuraClientConfigureOptions {
-  projectId?: string | null;
-  session?: string | null;
-  /** Style entries (same shape as from `auralogger init`). */
-  styles?: unknown | null;
+  projectToken: string;
 }
 
 interface WebSocketLike {
@@ -39,13 +33,21 @@ interface LogPayload {
   created_at: string;
 }
 
+interface ProjAuthResponse {
+  project_id?: string | null;
+  session?: string | null;
+  styles?: unknown;
+}
+
 const UNKNOWN_TYPE = "unknown";
 
 const LOCAL_FALLBACK_SESSION = "auralogger-local-session";
 
-let overrideProjectId: string | undefined;
-let overrideSession: string | undefined;
-let overrideStyles: unknown | undefined;
+let overrideProjectToken: string | undefined;
+let runtimeProjectId: string | null = null;
+let runtimeSession: string | null = null;
+let runtimeStyles: unknown = undefined;
+let hydrateFromSecretPromise: Promise<void> | null = null;
 
 let localSessionId: string | null = null;
 let socket: WebSocketLike | null = null;
@@ -132,6 +134,97 @@ function maybeData(data: unknown): string | undefined {
   }
 }
 
+function isPlainAuthResponse(value: unknown): value is ProjAuthResponse {
+  return value !== null && typeof value === "object";
+}
+
+async function fetchProjAuthConfig(projectToken: string): Promise<{
+  project_id: string | null;
+  session: string | null;
+  styles: unknown;
+}> {
+  const response = await fetch(buildProjAuthUrl(resolveApiBaseUrl(), projectToken), {
+    method: "POST",
+  }).catch((error: unknown) => {
+    const msg = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Can't reach Auralogger right now — check your network or VPN, then try again. (${msg})`,
+    );
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorBody(response));
+  }
+
+  const authResponse: unknown = await response.json().catch(() => {
+    throw new Error("Got a reply, but it wasn’t readable JSON. Try again in a moment.");
+  });
+
+  if (!isPlainAuthResponse(authResponse)) {
+    throw new Error(
+      "The reply didn’t look right. Run auralogger init again or double-check your project token.",
+    );
+  }
+
+  return {
+    project_id: authResponse.project_id ?? null,
+    session: authResponse.session ?? null,
+    styles: buildStyleEntriesFromProjAuth(authResponse.styles),
+  };
+}
+
+function applyProjAuthPayload(payload: {
+  project_id: string | null;
+  session: string | null;
+  styles: unknown;
+}): void {
+  runtimeProjectId = payload.project_id?.trim() ?? null;
+  runtimeSession = payload.session?.trim() ?? null;
+  runtimeStyles = payload.styles;
+  localSessionId = null;
+}
+
+function clearHydratedRuntimeConfig(): void {
+  runtimeProjectId = null;
+  runtimeSession = null;
+  runtimeStyles = undefined;
+}
+
+async function ensureHydratedRuntimeConfig(): Promise<void> {
+  const projectToken = resolvedProjectToken();
+  if (!projectToken) {
+    return;
+  }
+
+  if (runtimeProjectId && runtimeSession && runtimeStyles !== undefined) {
+    return;
+  }
+
+  if (!hydrateFromSecretPromise) {
+    hydrateFromSecretPromise = (async () => {
+      const token = resolvedProjectToken();
+      if (!token) {
+        return;
+      }
+      const payload = await fetchProjAuthConfig(token);
+      const projectId = payload.project_id?.trim() ?? "";
+      const session = payload.session?.trim() ?? "";
+      if (!projectId || !session) {
+        throw new Error("auralogger: proj_auth response missing project id or session.");
+      }
+      applyProjAuthPayload(payload);
+    })();
+  }
+
+  try {
+    await hydrateFromSecretPromise;
+  } catch (error: unknown) {
+    hydrateFromSecretPromise = null;
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`auralogger: could not load project config from API: ${msg}`);
+  }
+}
+
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -172,59 +265,23 @@ function getOrCreateLocalSession(): string {
   return localSessionId;
 }
 
-function resolvedProjectId(): string | undefined {
-  if (overrideProjectId !== undefined) {
-    return asNonEmptyString(overrideProjectId);
+function resolvedProjectToken(): string | undefined {
+  if (overrideProjectToken !== undefined) {
+    return asNonEmptyString(overrideProjectToken);
   }
-  return getResolvedProjectId();
-}
-
-function resolvedSessionRaw(): string | undefined {
-  if (overrideSession !== undefined) {
-    return asNonEmptyString(overrideSession);
-  }
-  return getResolvedSession();
-}
-
-function parseStylesString(raw: string): unknown | undefined {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  try {
-    return JSON.parse(trimmed) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
-function resolvedStyles(): unknown {
-  if (overrideStyles !== undefined) {
-    if (overrideStyles === null) {
-      return undefined;
-    }
-    if (typeof overrideStyles === "string") {
-      return parseStylesString(overrideStyles);
-    }
-    return overrideStyles;
-  }
-  return tryParseResolvedStyles() ?? undefined;
+  return getResolvedProjectToken();
 }
 
 function getProjectId(): string | null {
-  return resolvedProjectId() ?? null;
+  return runtimeProjectId;
 }
 
 function getSession(): string {
-  return resolvedSessionRaw() ?? getOrCreateLocalSession();
+  return runtimeSession ?? getOrCreateLocalSession();
 }
 
-function getConfigStyles(): unknown {
-  return resolvedStyles();
-}
-
-function buildWsUrl(projectId: string): string {
-  return `${resolveWsBaseUrl()}/${encodeURIComponent(projectId)}/create_browser_logs`;
+function buildWsUrl(projectToken: string): string {
+  return `${resolveWsBaseUrl()}/${encodeURIComponent(projectToken)}/create_browser_logs`;
 }
 
 function wsStates(): { CONNECTING: number; OPEN: number; CLOSED: number } {
@@ -239,7 +296,6 @@ function wsStates(): { CONNECTING: number; OPEN: number; CLOSED: number } {
 
 function attachAuraClientSocketLifecycle(ws: WebSocketLike, url: string): void {
   const onOpen = () => {
-    console.log(`auralogger: [AuraClient] websocket open — ${url}`);
     bumpSocketIdleTimer(ws);
   };
   const onClose = () => {
@@ -248,7 +304,6 @@ function attachAuraClientSocketLifecycle(ws: WebSocketLike, url: string): void {
       socket = null;
       socketUrl = null;
     }
-    console.log(`auralogger: [AuraClient] websocket closed — ${url}`);
   };
   const onErr = (...args: unknown[]) => {
     const first = args[0];
@@ -296,22 +351,31 @@ function socketOnce(
   );
 }
 
-/** Uses global WebSocket only (browser / Node 22+). Node without it: assign `globalThis.WebSocket` from `ws` before calling AuraClient.log. */
+/** Uses global WebSocket with path-only auth (`/{proj_token}/create_browser_logs`). */
 function createWebSocket(url: string): WebSocketLike | null {
-  const NativeWebSocket = (globalThis as { WebSocket?: new (u: string) => unknown })
+  const NativeWebSocket = (globalThis as {
+    WebSocket?: new (u: string, protocolsOrOptions?: unknown) => unknown;
+  })
     .WebSocket;
   if (typeof NativeWebSocket === "function") {
-    return new NativeWebSocket(url) as WebSocketLike;
+    try {
+      return new NativeWebSocket(url) as WebSocketLike;
+    } catch (error: unknown) {
+      const message = toErrorMessage(error);
+      console.error(
+        `auralogger: could not open websocket to create_browser_logs. ${message}`,
+      );
+      return null;
+    }
   }
 
   console.error(
-    "auralogger: WebSocket is not available. Use a browser, Node with global WebSocket, or set globalThis.WebSocket from the ws package before calling AuraClient.log.",
+    "auralogger: WebSocket is not available. Use Node and set globalThis.WebSocket from the ws package before calling AuraClient.log.",
   );
   return null;
 }
 
 function connectSocket(url: string): WebSocketLike | null {
-  console.log(`auralogger: [AuraClient] websocket connecting — ${url}`);
   const ws = createWebSocket(url);
   if (!ws) {
     return null;
@@ -322,17 +386,25 @@ function connectSocket(url: string): WebSocketLike | null {
   return ws;
 }
 
-function ensureSocket(): WebSocketLike | null {
+async function ensureSocket(): Promise<WebSocketLike | null> {
   const { CONNECTING, OPEN, CLOSED } = wsStates();
+  const projectToken = resolvedProjectToken();
+  if (!projectToken) {
+    console.error(
+      "auralogger: missing project token. Call AuraClient.configure({ projectToken }) before logging.",
+    );
+    return null;
+  }
+  await ensureHydratedRuntimeConfig();
   const projectId = getProjectId();
   if (!projectId) {
     console.error(
-      "auralogger: missing NEXT_PUBLIC_AURALOGGER_PROJECT_ID (or VITE_AURALOGGER_PROJECT_ID) in the environment.",
+      "auralogger: proj_auth did not return project id. Verify your project token and backend config.",
     );
     return null;
   }
 
-  const url = buildWsUrl(projectId);
+  const url = buildWsUrl(projectToken);
   if (socket && socketUrl === url && socket.readyState === OPEN) {
     return socket;
   }
@@ -359,50 +431,6 @@ function ensureSocket(): WebSocketLike | null {
   return socket;
 }
 
-function isBrowserConsole(): boolean {
-  const w = (globalThis as unknown as { window?: unknown }).window as
-    | { document?: unknown; navigator?: unknown }
-    | undefined;
-  return !!(w && typeof w.document !== "undefined" && typeof w.navigator !== "undefined");
-}
-
-function cssRgb(rgb: [number, number, number]): string {
-  return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
-}
-
-function printClientLog(payload: LogPayload, configStyles: unknown): void {
-  try {
-    const spec = resolveLogStyleSpec(payload.type, configStyles);
-
-    if (isBrowserConsole()) {
-      const timeStyle = `color:${cssRgb(spec["time-color"])};font-weight:600`;
-      const typeStyle = `color:${cssRgb(spec["type-color"])};font-weight:700`;
-      const locStyle = `color:${cssRgb(spec["location-color"])};font-weight:600`;
-      const msgStyle = `color:${cssRgb(spec["message-color"])};font-weight:400`;
-
-      const loc = payload.location ? ` ${payload.location}` : "";
-      console.log(
-        `%c${payload.created_at}%c ${spec.icon} %c${payload.type}%c${loc}`,
-        timeStyle,
-        "color:inherit",
-        typeStyle,
-        locStyle,
-      );
-      console.log(`%c${payload.message}`, msgStyle);
-      return;
-    }
-
-    console.log(
-      `${payload.created_at} ${spec.icon} [AuraClient] ${payload.type} ${payload.location ?? ""} ${payload.message}`,
-    );
-  } catch {
-    // Fallback must always succeed even with malformed styles config.
-    console.log(
-      `${payload.created_at} [AuraClient] ${payload.type} ${payload.location ?? ""} ${payload.message}`,
-    );
-  }
-}
-
 async function processClientlogAsync(
   type: string,
   message: string,
@@ -426,10 +454,8 @@ async function processClientlogAsync(
     payload.data = normalizedData;
   }
 
-  printClientLog(payload, getConfigStyles());
-
   try {
-    const ws = ensureSocket();
+    const ws = await ensureSocket();
     if (!ws) {
       console.error("auralogger: websocket unavailable; log payload:", payload);
       return;
@@ -482,24 +508,13 @@ async function processClientlogAsync(
 
 export class AuraClient {
   static configure(options: AuraClientConfigureOptions): void {
-    if ("projectId" in options) {
-      overrideProjectId =
-        options.projectId === null || options.projectId === undefined
-          ? undefined
-          : options.projectId;
+    const token = options.projectToken.trim();
+    if (!token) {
+      throw new Error("auralogger: projectToken cannot be empty.");
     }
-    if ("session" in options) {
-      overrideSession =
-        options.session === null || options.session === undefined
-          ? undefined
-          : options.session;
-    }
-    if ("styles" in options) {
-      overrideStyles =
-        options.styles === null || options.styles === undefined
-          ? undefined
-          : options.styles;
-    }
+    overrideProjectToken = token;
+    hydrateFromSecretPromise = null;
+    clearHydratedRuntimeConfig();
     localSessionId = null;
   }
 

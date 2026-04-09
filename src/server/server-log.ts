@@ -4,11 +4,13 @@ import {
   fetchProjAuthConfig,
   type InitConfigPayload,
 } from "../cli/services/init";
-import { printLog } from "../cli/services/log-print";
 import { loadCliEnvFiles } from "../cli/utility/cli-load-env";
 import { resolveWsBaseUrl } from "../utils/backend-origin";
 import { DEFAULT_SOCKET_IDLE_CLOSE_MS } from "../utils/socket-idle-close";
-import { getResolvedSecret } from "../utils/env-config";
+import {
+  getResolvedProjectToken,
+  getResolvedUserSecret,
+} from "../utils/env-config";
 
 const LOCAL_FALLBACK_SESSION = "auralogger-local-session";
 
@@ -23,7 +25,8 @@ interface LogPayload {
 const UNKNOWN_TYPE = "unknown";
 
 let nodeEnvLoaded = false;
-let overrideSecret: string | undefined;
+let overrideProjectToken: string | undefined;
+let overrideUserSecret: string | undefined;
 let runtimeProjectId: string | null = null;
 let runtimeSession: string | null = null;
 let runtimeStyles: unknown = undefined;
@@ -35,11 +38,11 @@ let socket: WebSocket | null = null;
 let socketUrl: string | null = null;
 let socketIdleTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Single-flight lazy fetch for secret -> project/session/styles hydration. */
+/** Single-flight lazy fetch for project token -> project/session/styles hydration. */
 let hydrateFromSecretPromise: Promise<void> | null = null;
 
 function applyProjAuthPayload(payload: InitConfigPayload): void {
-  overrideSecret = payload.secret_key;
+  overrideProjectToken = payload.project_token;
   runtimeProjectId = payload.project_id?.trim() ?? null;
   runtimeSession = payload.session?.trim() ?? null;
   runtimeStyles = payload.styles;
@@ -54,8 +57,8 @@ function clearHydratedRuntimeConfig(): void {
 }
 
 async function ensureHydratedRuntimeConfig(): Promise<void> {
-  const secret = resolvedSecret();
-  if (!secret) {
+  const projectToken = resolvedProjectToken();
+  if (!projectToken) {
     return;
   }
 
@@ -65,11 +68,11 @@ async function ensureHydratedRuntimeConfig(): Promise<void> {
 
   if (!hydrateFromSecretPromise) {
     hydrateFromSecretPromise = (async () => {
-      const s = resolvedSecret();
-      if (!s) {
+      const token = resolvedProjectToken();
+      if (!token) {
         return;
       }
-      const payload = await fetchProjAuthConfig(s);
+      const payload = await fetchProjAuthConfig(token);
       const projectId = payload.project_id?.trim() ?? "";
       const session = payload.session?.trim() ?? "";
       if (!projectId || !session) {
@@ -132,16 +135,24 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function resolvedSecret(): string | undefined {
-  if (overrideSecret !== undefined) {
-    const t = overrideSecret.trim();
+function resolvedProjectToken(): string | undefined {
+  if (overrideProjectToken !== undefined) {
+    const t = overrideProjectToken.trim();
     return t.length > 0 ? t : undefined;
   }
-  return getResolvedSecret();
+  return getResolvedProjectToken();
+}
+
+function resolvedUserSecret(): string | undefined {
+  if (overrideUserSecret !== undefined) {
+    const t = overrideUserSecret.trim();
+    return t.length > 0 ? t : undefined;
+  }
+  return getResolvedUserSecret();
 }
 
 function serverHasFullConfig(): boolean {
-  if (!resolvedSecret()) {
+  if (!resolvedProjectToken() || !resolvedUserSecret()) {
     return false;
   }
   if (!runtimeProjectId) {
@@ -158,7 +169,7 @@ function ensureRuntimeMode(): void {
   if (consoleOnlyFallback && !warnedIncompleteEnv) {
     warnedIncompleteEnv = true;
     console.error(
-      'auralogger: logging to console only. Set AURALOGGER_PROJECT_SECRET, then AuraServer auto-loads project id/session/styles from /api/proj_auth on the first log (or call AuraServer.syncFromSecret(secret)).',
+      "auralogger: logging to console only. Set AURALOGGER_PROJECT_TOKEN + AURALOGGER_USER_SECRET, then AuraServer auto-loads project id/session/styles from POST /api/{project_token}/proj_auth on the first log (or call AuraServer.syncFromSecret(projectToken, userSecret)).",
     );
   }
 }
@@ -170,8 +181,12 @@ function getOrCreateLocalSession(): string {
   return localSessionId;
 }
 
-function getSecret(): string | null {
-  return resolvedSecret() ?? null;
+function getProjectToken(): string | null {
+  return resolvedProjectToken() ?? null;
+}
+
+function getUserSecret(): string | null {
+  return resolvedUserSecret() ?? null;
 }
 
 function getProjectId(): string | null {
@@ -183,13 +198,6 @@ function getSession(): string | null {
     return getOrCreateLocalSession();
   }
   return runtimeSession;
-}
-
-function getConfigStyles(): unknown {
-  if (consoleOnlyFallback) {
-    return undefined;
-  }
-  return runtimeStyles;
 }
 
 function padMicros(microseconds: number): string {
@@ -235,14 +243,14 @@ function maybeData(data: unknown): string | undefined {
   }
 }
 
-function buildWsUrl(projectId: string): string {
-  return `${resolveWsBaseUrl()}/${encodeURIComponent(projectId)}/create_log`;
+function buildWsUrl(projectToken: string): string {
+  return `${resolveWsBaseUrl()}/${encodeURIComponent(projectToken)}/create_log`;
 }
 
-function connectSocket(url: string, secret: string): WebSocket {
+function connectSocket(url: string, userSecret: string): WebSocket {
   const ws = new WebSocket(url, {
     headers: {
-      secret,
+      authorization: `Bearer ${userSecret}`,
     },
   });
 
@@ -269,22 +277,22 @@ function ensureSocket(): WebSocket | null {
     return null;
   }
 
-  const projectId = getProjectId();
-  if (!projectId) {
+  const projectToken = getProjectToken();
+  if (!projectToken) {
     console.error(
-      "auralogger: missing project id after secret auth. Check your secret or /api/proj_auth response.",
+      "auralogger: missing AURALOGGER_PROJECT_TOKEN in the environment.",
     );
     return null;
   }
-  const secret = getSecret();
-  if (!secret) {
+  const userSecret = getUserSecret();
+  if (!userSecret) {
     console.error(
-      "auralogger: missing AURALOGGER_PROJECT_SECRET in the environment.",
+      "auralogger: missing AURALOGGER_USER_SECRET in the environment.",
     );
     return null;
   }
 
-  const url = buildWsUrl(projectId);
+  const url = buildWsUrl(projectToken);
   if (socket && socketUrl === url && socket.readyState === WebSocket.OPEN) {
     return socket;
   }
@@ -295,7 +303,7 @@ function ensureSocket(): WebSocket | null {
     clearSocketIdleTimer();
     socket.close();
   }
-  socket = connectSocket(url, secret);
+  socket = connectSocket(url, userSecret);
   socketUrl = url;
   return socket;
 }
@@ -314,7 +322,7 @@ async function processServerlogAsync(
   const session = getSession();
   if (!session) {
     console.error(
-      "auralogger: missing session after secret auth. Check your secret or /api/proj_auth response.",
+      "auralogger: missing session after token auth. Check your project token or proj_auth response.",
     );
     return;
   }
@@ -332,13 +340,6 @@ async function processServerlogAsync(
   const normalizedData = maybeData(data);
   if (normalizedData) {
     payload.data = normalizedData;
-  }
-
-  try {
-    printLog(payload, getConfigStyles());
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error(`auralogger: failed to print log: ${msg}`);
   }
 
   const ws = ensureSocket();
@@ -400,15 +401,18 @@ async function processServerlogAsync(
 
 export class AuraServer {
   /**
-   * Configure server logging with only the private secret.
-   * Project id, session, and styles are fetched from `POST /api/proj_auth`.
+   * Configure server logging with project token and optional user secret override.
+   * Project id, session, and styles are fetched from `POST /api/{project_token}/proj_auth`.
    */
-  static configure(secret: string): void {
-    overrideSecret = secret;
+  static configure(projectToken: string, userSecret?: string): void {
+    overrideProjectToken = projectToken;
+    if (userSecret !== undefined) {
+      overrideUserSecret = userSecret;
+    }
     hydrateFromSecretPromise = null;
     clearHydratedRuntimeConfig();
     warnedIncompleteEnv = false;
-    const trimmed = secret.trim();
+    const trimmed = projectToken.trim();
     if (!trimmed) {
       return;
     }
@@ -425,12 +429,15 @@ export class AuraServer {
     })();
   }
 
-  static async syncFromSecret(secret: string): Promise<void> {
+  static async syncFromSecret(projectToken: string, userSecret?: string): Promise<void> {
     ensureNodeEnvLoadedOnce();
+    if (userSecret !== undefined) {
+      overrideUserSecret = userSecret;
+    }
     hydrateFromSecretPromise = null;
-    const trimmed = secret.trim();
+    const trimmed = projectToken.trim();
     if (!trimmed) {
-      throw new Error("AuraServer.syncFromSecret: secret cannot be empty.");
+      throw new Error("AuraServer.syncFromSecret: project token cannot be empty.");
     }
     clearHydratedRuntimeConfig();
     const payload = await fetchProjAuthConfig(trimmed);

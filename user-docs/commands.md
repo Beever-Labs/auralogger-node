@@ -1,3 +1,4 @@
+<!-- Generated: 2026-04-08 09:38:59 UTC -->
 # CLI command reference
 
 *Short and bossy: what each subcommand does, how to spell **`get-logs`** filters, and copy-paste examples. For vibes + full tour, **[`readme.md`](../readme.md)**; for env spellings, **[`environment.md`](environment.md)**.*
@@ -16,14 +17,14 @@ auralogger <command> [arguments...]
 
 | Command | Args | Purpose |
 |---------|------|---------|
-| `init` | — | Auth with **secret**; when needed, print the **private** `.env` line; two snippets (**`Auralog`** client reading **`NEXT_PUBLIC_AURALOGGER_*`** + **`AuraLog`** server with `ensureConfigured` + `AuraServer.configure`). Shows publishable id/session/styles for you to paste into `NEXT_PUBLIC_*` / `VITE_*` manually (see **`user-docs/environment.md`**). |
-| `server-check` | — | Test WebSocket connectivity (needs project id + secret in env). |
-| `client-check` | — | Same env as **`server-check`** (id + secret + session); opens **`create_browser_logs`** (no secret on the socket, like **`AuraClient`**). |
+| `init` | — | Banner, then prompts; `POST /api/{project_token}/proj_auth` (token in path); **copy-paste dotenv** up to five lines: `AURALOGGER_PROJECT_TOKEN`, `AURALOGGER_USER_SECRET`, `AURALOGGER_PROJECT_SESSION`, `NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN`, `VITE_AURALOGGER_PROJECT_TOKEN` (each omitted if already set); no id/styles keys. Two snippets (**`Auralog`** + **`AuraLog`**). See **`user-docs/environment.md`**. |
+| `server-check` | — | Test WebSocket connectivity (needs project id + `AURALOGGER_PROJECT_TOKEN` + `AURALOGGER_USER_SECRET` in env). |
+| `client-check` | — | Same project/session context resolution as **`server-check`**; opens **`/{proj_token}/create_browser_logs`** with path-only auth (no headers). |
 | `test-serverlog` | — | Send 5 logs via `AuraServer.log` (production path), then close. |
 | `test-clientlog` | — | Send 5 logs via `AuraClient.log` (production path), then close. |
-| `get-logs` | `[filters...]` | Fetch and print logs; filters use grammar below. If **`AURALOGGER_PROJECT_STYLES`** (or public equivalents) is missing, runs the same **`proj_auth`** fetch as **`init`** and styles logs from the response (prompts for secret when needed). |
+| `get-logs` | `[filters...]` | Fetch and print logs; filters use grammar below. If **`AURALOGGER_PROJECT_STYLES`** (or public equivalents) is missing, runs the same **`proj_auth`** fetch as **`init`** and styles logs from the response (prompts for project token / user secret when needed). |
 
-**Paging:** each run performs **one** `POST /api/logs` and prints that response — **no** built-in multi-page loop. Use **`-maxcount`** (capped at **100** in the CLI) and **`-skip`**; run the command again (or script it) for the next page.
+**Paging:** each run performs **one** `POST /api/{project_token}/logs` and prints that response — **no** built-in multi-page loop. Use **`-maxcount`** (capped at **100** in the CLI) and **`-skip`**; run the command again (or script it) for the next page.
 
 ## `get-logs` filter grammar
 
