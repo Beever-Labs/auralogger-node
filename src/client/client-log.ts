@@ -1,7 +1,11 @@
 import { buildProjAuthUrl, resolveApiBaseUrl, resolveWsBaseUrl } from "../utils/backend-origin";
 import { DEFAULT_SOCKET_IDLE_CLOSE_MS } from "../utils/socket-idle-close";
-import { getResolvedProjectToken } from "../utils/env-config";
+import {
+  getResolvedProjectToken,
+  resolveStylesForConsolePrint,
+} from "../utils/env-config";
 import { parseErrorBody } from "../utils/http-utils";
+import { printLog } from "../cli/services/log-print";
 import { buildStyleEntriesFromProjAuth } from "../cli/utility/log-styles";
 
 export interface AuraClientConfigureOptions {
@@ -53,6 +57,8 @@ let localSessionId: string | null = null;
 let socket: WebSocketLike | null = null;
 let socketUrl: string | null = null;
 let socketIdleTimer: ReturnType<typeof setTimeout> | null = null;
+let warnedMissingProjectToken = false;
+let warnedMissingProjectId = false;
 
 function clearSocketIdleTimer(): void {
   if (socketIdleTimer !== null) {
@@ -390,19 +396,27 @@ async function ensureSocket(): Promise<WebSocketLike | null> {
   const { CONNECTING, OPEN, CLOSED } = wsStates();
   const projectToken = resolvedProjectToken();
   if (!projectToken) {
-    console.error(
-      "auralogger: missing project token. Call AuraClient.configure({ projectToken }) before logging.",
-    );
+    if (!warnedMissingProjectToken) {
+      warnedMissingProjectToken = true;
+      console.error(
+        "auralogger: missing project token. Call AuraClient.configure({ projectToken }) before logging.",
+      );
+    }
     return null;
   }
+  warnedMissingProjectToken = false;
   await ensureHydratedRuntimeConfig();
   const projectId = getProjectId();
   if (!projectId) {
-    console.error(
-      "auralogger: proj_auth did not return project id. Verify your project token and backend config.",
-    );
+    if (!warnedMissingProjectId) {
+      warnedMissingProjectId = true;
+      console.error(
+        "auralogger: proj_auth did not return project id. Verify your project token and backend config.",
+      );
+    }
     return null;
   }
+  warnedMissingProjectId = false;
 
   const url = buildWsUrl(projectToken);
   if (socket && socketUrl === url && socket.readyState === OPEN) {
@@ -439,6 +453,8 @@ async function processClientlogAsync(
   data?: unknown,
 ): Promise<void> {
   const { CONNECTING, OPEN } = wsStates();
+  await ensureHydratedRuntimeConfig();
+
   const payload: LogPayload = {
     type: normalizeType(type),
     message: String(message ?? ""),
@@ -454,10 +470,13 @@ async function processClientlogAsync(
     payload.data = normalizedData;
   }
 
+  deferTask(() => {
+    printLog(payload, resolveStylesForConsolePrint(runtimeStyles));
+  });
+
   try {
     const ws = await ensureSocket();
     if (!ws) {
-      console.error("auralogger: websocket unavailable; log payload:", payload);
       return;
     }
     if (ws.readyState === OPEN) {
@@ -516,6 +535,8 @@ export class AuraClient {
     hydrateFromSecretPromise = null;
     clearHydratedRuntimeConfig();
     localSessionId = null;
+    warnedMissingProjectToken = false;
+    warnedMissingProjectId = false;
   }
 
   static log(type: string, message: string, location?: string, data?: unknown): void {

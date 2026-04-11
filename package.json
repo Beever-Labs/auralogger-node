@@ -92,6 +92,7 @@
   ],
   "scripts": {
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
+    "bundle:test-client": "npx --yes esbuild dist/client.js --bundle --format=esm --platform=browser --outfile=tests/auralogger-client.browser.mjs",
     "prepare": "npm run build",
     "test": "npm run build && node dist/cli/bin/auralogger.js test-serverlog"
   },
