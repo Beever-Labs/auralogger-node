@@ -191,7 +191,7 @@ function buildAuraClientWrapperSnippet(): string {
     `function ensureConfigured(): void {`,
     `  if (configured) return`,
     ``,
-    `  // AuraClient only needs the project token; it hydrates via POST /api/{project_token}/proj_auth (token in path).`,
+    `  // AuraClient.configure() only needs the project token — never put the user secret in client bundles.`,
     `  // You can also use hardcoded strings instead of env lookups below (avoid committing real values).`,
     `  const projectToken = process.env.NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN`,
     `  if (!projectToken) {`,
@@ -382,7 +382,7 @@ function printCopyPasteEnvBlock(
   );
   console.log(
     chalk.dim(
-      "   Up to five lines when everything’s new: server token, user secret, session, then the same token for Next and Vite. Project id + DevTools styles come from proj_auth — no .env lines for those.",
+      "   Up to five lines when everything’s new: server token, user secret, session, then the same token for Next and Vite.",
     ),
   );
   console.log("");
@@ -491,7 +491,7 @@ function printPostInitSummary(
   console.log(
     chalk.gray("   The ") +
       chalk.bold.gray("client") +
-      chalk.gray(" Auralog uses project token only; proj_auth uses the token in the URL path."),
+      chalk.gray(" Auralog file reads only the publishable project token from env."),
   );
   console.log("");
 }
@@ -502,11 +502,6 @@ function printAlreadyConfiguredSuccess(): void {
     chalk.bold.hex("#ffa657")("🎉 ") +
       chalk.white("Plot twist — this shell already has token, user secret, and session."),
   );
-  console.log(
-    chalk.gray(
-      "   Drop-in helpers below — client reads the project token from your bundler; server uses token + user secret; id/styles can hydrate via proj_auth.",
-    ),
-  );
   {
     const a = pickAside(INIT_ALREADY_STRANGE_ASIDES);
     printAside(a.emoji, a.line);
@@ -514,21 +509,10 @@ function printAlreadyConfiguredSuccess(): void {
   console.log("");
   printTwoAuralogExplainer();
   printInitHelperSnippetsWithCharacterVoices();
-  console.log(
-    chalk.dim("   Need a fresh session from the API? Unset ") +
-      chalk.white(ENV_PROJECT_SESSION) +
-      chalk.dim(", then "),
-    chalk.hex("#79c0ff")("auralogger init"),
-    chalk.dim(" again."),
-  );
   {
     const a = pickAside(INIT_ALREADY_LOKI_ASIDES);
     printAside(a.emoji, a.line);
   }
-  console.log(
-    chalk.dim("   Victory lap for the server pipe: "),
-    chalk.hex("#79c0ff")("auralogger server-check"),
-  );
   {
     const a = pickAside(INIT_ALREADY_STEVE_ASIDES);
     printAside(a.emoji, a.line);
