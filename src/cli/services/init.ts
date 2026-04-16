@@ -185,12 +185,6 @@ function buildAuraClientWrapperSnippet(): string {
   return [
     `import { AuraClient } from 'auralogger-cli/client'`,
     ``,
-    `export type AuralogParams = {`,
-    `  type: string`,
-    `  message: string`,
-    `  location?: string`,
-    `  data?: unknown`,
-    `}`,
     ``,
     `let configured = false`,
     ``,
@@ -209,9 +203,9 @@ function buildAuraClientWrapperSnippet(): string {
     `}`,
     ``,
     `/** Browser-safe: project token only. Never include user secret in client bundles. */`,
-    `export function Auralog(params: AuralogParams): void {`,
+    `export function Auralog(type: string, message: string, location?: string, data?: unknown): void {`,
     `  ensureConfigured()`,
-    `  AuraClient.log(params.type, params.message, params.location, params.data)`,
+    `  AuraClient.log(type, message, location, data)`,
     `}`,
   ].join("\n");
 }
@@ -219,13 +213,6 @@ function buildAuraClientWrapperSnippet(): string {
 function buildAuraServerWrapperSnippet(): string {
   return [
     `import { AuraServer } from 'auralogger-cli/server'`,
-    ``,
-    `export type AuralogParams = {`,
-    `  type: string`,
-    `  message: string`,
-    `  location?: string`,
-    `  data?: unknown`,
-    `}`,
     ``,
     `let configured = false`,
     ``,
@@ -247,10 +234,40 @@ function buildAuraServerWrapperSnippet(): string {
     `}`,
     ``,
     `/** Server-only: uses project token + user secret from env. Do not import from client components. */`,
-    `export function AuraLog(params: AuralogParams): void {`,
+    `export function AuraLog(type: string, message: string, location?: string, data?: unknown): void {`,
     `  ensureConfigured()`,
-    `  AuraServer.log(params.type, params.message, params.location, params.data)`,
+    `  AuraServer.log(type, message, location, data)`,
     `}`,
+  ].join("\n");
+}
+
+function buildAuraClientUsageSnippet(): string {
+  return [
+    `import { Auralog } from '@/lib/auralog/client-auralog'`,
+    ``,
+    `Auralog('info', 'Client page mounted', 'src/app/test/page.tsx', { source: 'test-page-client' })`,
+    `// expected: [info] Client page mounted @ src/app/test/page.tsx { source: 'test-page-client' }`,
+    ``,
+    `Auralog('warn', 'Client cache miss')`,
+    `// expected: [warn] Client cache miss`,
+    ``,
+    `Auralog('error', 'Client fetch failed', undefined, { retrying: true })`,
+    `// expected: [error] Client fetch failed { retrying: true }`,
+  ].join("\n");
+}
+
+function buildAuraServerUsageSnippet(): string {
+  return [
+    `import { AuraLog } from '@/lib/auralog/server-auralog'`,
+    ``,
+    `AuraLog('info', 'Request completed', 'src/app/api/orders/route.ts', { order_id: 'ord_123', status: 201 })`,
+    `// expected: [info] Request completed @ src/app/api/orders/route.ts { order_id: 'ord_123', status: 201 }`,
+    ``,
+    `AuraLog('warn', 'Cache miss')`,
+    `// expected: [warn] Cache miss`,
+    ``,
+    `AuraLog('error', 'Payment gateway timeout', undefined, { provider: 'stripe' })`,
+    `// expected: [error] Payment gateway timeout { provider: 'stripe' }`,
   ].join("\n");
 }
 
@@ -295,6 +312,10 @@ function printInitHelperSnippetsWithCharacterVoices(): void {
     "Client-side Auralog — auralogger-cli/client",
     buildAuraClientWrapperSnippet(),
   );
+  printCodeStory(
+    "Using your generated Auralog helper (client example logs)",
+    buildAuraClientUsageSnippet(),
+  );
   {
     const a = pickAside(INIT_SNIPPET_DEADPOOL_ASIDES);
     printAside(a.emoji, a.line);
@@ -310,6 +331,10 @@ function printInitHelperSnippetsWithCharacterVoices(): void {
   printCodeStory(
     "Server-side AuraLog — auralogger-cli/server",
     buildAuraServerWrapperSnippet(),
+  );
+  printCodeStory(
+    "Using your generated AuraLog helper (server example logs)",
+    buildAuraServerUsageSnippet(),
   );
 }
 

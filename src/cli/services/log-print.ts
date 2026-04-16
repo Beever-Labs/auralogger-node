@@ -36,7 +36,11 @@ function printLogPlain(log: PrintableLogRow): void {
   const type = typeof log.type === "string" ? log.type : String(log.type ?? "");
   const loc = String(log.location ?? "");
   const msg = String(log.message ?? "");
+  const data = log.data == null ? "" : String(log.data);
   console.log(`${ts} ${type} ${loc}`.trim(), msg);
+  if (data.trim()) {
+    console.log(data);
+  }
 }
 
 function rgbPaint(rgb: [number, number, number], text: unknown): string {
@@ -60,12 +64,16 @@ export function printLog(log: PrintableLogRow, configStyles: unknown): void {
     );
     const loc = String(log.location ?? "");
     console.log(
-      rgbPaint(spec["time-color"], formatCreatedAtTimeOnly(log.created_at)),
+      chalk.dim(rgbPaint(spec["time-color"], formatCreatedAtTimeOnly(log.created_at))),
       spec.icon,
-      rgbPaint(spec["type-color"], log.type),
+      chalk.dim(rgbPaint(spec["type-color"], log.type)),
       rgbPaint(spec["location-color"], loc),
     );
     console.log(rgbPaint(spec["message-color"], String(log.message ?? "")));
+    const data = String(log.data ?? "");
+    if (data.trim()) {
+      console.log(chalk.dim(rgbPaint(spec["text-color"], data)));
+    }
   } catch {
     printLogPlain(log);
   }

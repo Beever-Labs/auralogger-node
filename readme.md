@@ -113,25 +113,20 @@ Use it from a client component or page:
 ```ts
 import { Auralog } from "@/lib/auralog/client-auralog";
 
-Auralog({
-  type: "info",
-  message: "new client tests",
-  location: "src/app/test/page.tsx",
-  data: { source: "test-page-client" },
-});
+Auralog("info", "new client tests", "src/app/test/page.tsx", { source: "test-page-client" });
+// expected: [info] new client tests @ src/app/test/page.tsx { source: "test-page-client" }
+
+Auralog("warn", "client cache miss");
+// expected: [warn] client cache miss
+
+Auralog("error", "client fetch failed", undefined, { retrying: true });
+// expected: [error] client fetch failed { retrying: true }
 ```
 
 **Server-side `AuraLog`** (`auralogger-cli/server`) — save as e.g. `src/lib/auralog/server-auralog.ts`. **Never import this file from client code.**
 
 ```ts
 import { AuraServer } from "auralogger-cli/server";
-
-export type AuralogParams = {
-  type: string;
-  message: string;
-  location?: string;
-  data?: unknown;
-};
 
 let configured = false;
 
@@ -153,9 +148,9 @@ function ensureConfigured(): void {
 }
 
 /** Server-only: uses project token + user secret from env. Do not import from client components. */
-export function AuraLog(params: AuralogParams): void {
+export function AuraLog(type: string, message: string, location?: string, data?: unknown): void {
   ensureConfigured();
-  AuraServer.log(params.type, params.message, params.location, params.data);
+  AuraServer.log(type, message, location, data);
 }
 ```
 
@@ -164,12 +159,16 @@ Use it from a route handler, server action, etc.:
 ```ts
 import { AuraLog } from "@/lib/auralog/server-auralog";
 
-AuraLog({
-  type: "info",
-  message: "new server tests",
-  location: "src/app/api/test/auralog/route.ts",
-  data: { source: "test-api-route" },
+AuraLog("info", "new server tests", "src/app/api/test/auralog/route.ts", {
+  source: "test-api-route",
 });
+// expected: [info] new server tests @ src/app/api/test/auralog/route.ts { source: "test-api-route" }
+
+AuraLog("warn", "cache miss");
+// expected: [warn] cache miss
+
+AuraLog("error", "db timeout", undefined, { retrying: true });
+// expected: [error] db timeout { retrying: true }
 ```
 
 ### 5) Fetch logs in your terminal
