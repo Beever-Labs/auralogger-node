@@ -6,7 +6,7 @@
 
 ---
 
-## Quick start (copy/paste)
+## Quick start (copy/paste) 
 
 Run CLI commands from the directory that contains your `.env` / `.env.local` (or where `AURALOGGER_PROJECT_*` is set in your shell/CI). The CLI loads `.env` files from the **current working directory** — *i.e. `cd` into the app before you heroically type `npx`.*
 
