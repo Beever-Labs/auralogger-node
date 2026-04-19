@@ -198,7 +198,7 @@ function buildAuraClientWrapperSnippet(): string {
     `    throw new Error('Missing NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN')`,
     `  }`,
     ``,
-    `  AuraClient.configure(projectToken )`,
+    `  AuraClient.configure(projectToken)`,
     `  configured = true`,
     `}`,
     ``,
@@ -230,6 +230,7 @@ function buildAuraServerWrapperSnippet(): string {
     `  }`,
     ``,
     `  AuraServer.configure(projectToken, userSecret)`,
+    `  // AuraServer.configure(); // console-only logs to avoid network overhead and costs (use in production).`,
     `  configured = true`,
     `}`,
     ``,
@@ -338,31 +339,32 @@ function printInitHelperSnippetsWithCharacterVoices(): void {
   );
 }
 
+function styleInitCodeLine(line: string): string {
+  if (line.startsWith("import ")) {
+    return chalk.hex("#ff7b72")("import") + chalk.hex("#7ee787")(" " + line.slice(7));
+  }
+  if (line.startsWith("export type ")) {
+    return (
+      chalk.hex("#ff7b72")("export type") +
+      chalk.hex("#7ee787")(line.slice("export type".length))
+    );
+  }
+  if (line.startsWith("export function ")) {
+    return (
+      chalk.hex("#ff7b72")("export function") +
+      chalk.hex("#7ee787")(line.slice("export function".length))
+    );
+  }
+  return chalk.hex("#7ee787")(line);
+}
+
 function printCodeStory(title: string, snippet: string): void {
-  console.log(
-    chalk.bold.hex("#d2a8ff")("  📋 ") + chalk.bold.white(title),
-  );
+  const rawLines = snippet.split("\n");
+
+  console.log(chalk.bold.hex("#d2a8ff")("  📋 ") + chalk.bold.white(title));
   console.log("");
-  for (const line of snippet.split("\n")) {
-    if (line.startsWith("import ")) {
-      console.log(
-        "  " + chalk.hex("#ff7b72")("import") + chalk.hex("#7ee787")(" " + line.slice(7)),
-      );
-    } else if (line.startsWith("export type ")) {
-      console.log(
-        "  " +
-          chalk.hex("#ff7b72")("export type") +
-          chalk.hex("#7ee787")(line.slice("export type".length)),
-      );
-    } else if (line.startsWith("export function ")) {
-      console.log(
-        "  " +
-          chalk.hex("#ff7b72")("export function") +
-          chalk.hex("#7ee787")(line.slice("export function".length)),
-      );
-    } else {
-      console.log("  " + chalk.hex("#7ee787")(line));
-    }
+  for (const line of rawLines) {
+    console.log("  " + styleInitCodeLine(line));
   }
   console.log("");
 }
@@ -402,8 +404,10 @@ function printCopyPasteEnvBlock(
     lines.push(formatDotenvLine(ENV_VITE_PROJECT_TOKEN, payload.project_token));
   }
 
-  for (const line of lines) {
-    console.log(chalk.hex("#8b949e")(line));
+  if (lines.length > 0) {
+    for (const line of lines) {
+      console.log("  " + chalk.hex("#8b949e")(line));
+    }
   }
 
   if (projectTokenWasAlreadyInEnv) {
@@ -476,7 +480,6 @@ function printPostInitSummary(
     userSecret,
   );
 
-  console.log("");
   printTwoAuralogExplainer();
   printInitHelperSnippetsWithCharacterVoices();
 
@@ -517,7 +520,6 @@ function printAlreadyConfiguredSuccess(): void {
     const a = pickAside(INIT_ALREADY_STEVE_ASIDES);
     printAside(a.emoji, a.line);
   }
-  console.log("");
 }
 
 export async function runInit(): Promise<void> {

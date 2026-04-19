@@ -18,6 +18,8 @@ import {
 const LOCAL_FALLBACK_SESSION = "auralogger-local-session";
 const SDK_RETRY_ATTEMPTS = 3;
 const SDK_RETRY_DELAY_MS = 500;
+const BATCH_FLUSH_INTERVAL_MS = 30;
+const BATCH_MAX_SIZE = 30;
 
 interface LogPayload {
   type: string;
@@ -35,13 +37,13 @@ let overrideUserSecret: string | undefined;
 let runtimeProjectId: string | null = null;
 let runtimeSession: string | null = null;
 let runtimeStyles: ProjAuthConfigPayload["styles"] | undefined = undefined;
-
-let consoleOnlyFallback = false;
 let localSessionId: string | null = null;
-let warnedIncompleteEnv = false;
 let socket: WebSocket | null = null;
 let socketUrl: string | null = null;
 let socketIdleTimer: ReturnType<typeof setTimeout> | null = null;
+let bufferedLogs: LogPayload[] = [];
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+let flushInFlight = false;
 
 /** Single-flight lazy fetch for project token -> project/session/styles hydration. */
 let hydrateFromSecretPromise: Promise<void> | null = null;
@@ -52,7 +54,6 @@ function applyProjAuthPayload(payload: InitConfigPayload): void {
   runtimeSession = payload.session?.trim() ?? null;
   runtimeStyles = payload.styles;
   localSessionId = null;
-  warnedIncompleteEnv = false;
 }
 
 function clearHydratedRuntimeConfig(): void {
@@ -134,6 +135,13 @@ function clearSocketIdleTimer(): void {
   }
 }
 
+function clearFlushTimer(): void {
+  if (flushTimer !== null) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+}
+
 function bumpSocketIdleTimer(ws: WebSocket): void {
   clearSocketIdleTimer();
   socketIdleTimer = setTimeout(() => {
@@ -147,6 +155,12 @@ function bumpSocketIdleTimer(ws: WebSocket): void {
       // ignore
     }
   }, DEFAULT_SOCKET_IDLE_CLOSE_MS);
+}
+
+function resetBufferedLogs(): void {
+  bufferedLogs = [];
+  clearFlushTimer();
+  flushInFlight = false;
 }
 
 const deferTask =
@@ -174,29 +188,6 @@ function resolvedUserSecret(): string | undefined {
   return getResolvedUserSecret();
 }
 
-function serverHasFullConfig(): boolean {
-  if (!resolvedProjectToken() || !resolvedUserSecret()) {
-    return false;
-  }
-  if (!runtimeProjectId) {
-    return false;
-  }
-  if (!runtimeSession) {
-    return false;
-  }
-  return runtimeStyles !== undefined;
-}
-
-function ensureRuntimeMode(): void {
-  consoleOnlyFallback = !serverHasFullConfig();
-  if (consoleOnlyFallback && !warnedIncompleteEnv) {
-    warnedIncompleteEnv = true;
-    console.error(
-      "auralogger: logging to console only. Set AURALOGGER_PROJECT_TOKEN + AURALOGGER_USER_SECRET, then AuraServer auto-loads project id/session/styles from POST /api/{project_token}/proj_auth on the first log (or call AuraServer.syncFromSecret(projectToken, userSecret)).",
-    );
-  }
-}
-
 function getOrCreateLocalSession(): string {
   if (!localSessionId) {
     localSessionId = LOCAL_FALLBACK_SESSION;
@@ -213,13 +204,6 @@ function getUserSecret(): string | null {
 }
 
 
-
-function getSession(): string | null {
-  if (consoleOnlyFallback) {
-    return getOrCreateLocalSession();
-  }
-  return runtimeSession;
-}
 
 function padMicros(microseconds: number): string {
   return String(microseconds).padStart(6, "0");
@@ -294,10 +278,6 @@ function connectSocket(url: string, userSecret: string): WebSocket {
 }
 
 function ensureSocket(): WebSocket | null {
-  if (consoleOnlyFallback) {
-    return null;
-  }
-
   const projectToken = getProjectToken();
   if (!projectToken) {
     console.error(
@@ -329,6 +309,149 @@ function ensureSocket(): WebSocket | null {
   return socket;
 }
 
+function sendServerBatch(
+  ws: WebSocket,
+  sendPayload: string,
+  batch: LogPayload[],
+): void {
+  ws.send(sendPayload, (error?: Error) => {
+    if (!error) {
+      return;
+    }
+    const sendErr = error?.message || String(error);
+    console.warn(`auralogger: websocket send failed (${sendErr}); retrying (2/2)...`);
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      try {
+        socket.close();
+      } catch {
+        // ignore
+      }
+    }
+    socket = null;
+    socketUrl = null;
+    const retryWs = ensureSocket();
+    if (!retryWs) {
+      console.error("auralogger: websocket unavailable after retry; log batch payload:", batch);
+      return;
+    }
+    if (retryWs.readyState === WebSocket.OPEN) {
+      bumpSocketIdleTimer(retryWs);
+      retryWs.send(sendPayload, (retryError?: Error) => {
+        if (!retryError) {
+          return;
+        }
+        const retryErr = retryError?.message || String(retryError);
+        console.error(`auralogger: websocket send failed after retry: ${retryErr}`);
+        console.error("auralogger: failed batch payload:", batch);
+      });
+      return;
+    }
+    retryWs.once("open", () => {
+      bumpSocketIdleTimer(retryWs);
+      retryWs.send(sendPayload, (retryError?: Error) => {
+        if (!retryError) {
+          return;
+        }
+        const retryErr = retryError?.message || String(retryError);
+        console.error(`auralogger: websocket send failed after retry: ${retryErr}`);
+        console.error("auralogger: failed batch payload:", batch);
+      });
+    });
+  });
+}
+
+function sendServerLogBatch(batch: LogPayload[]): void {
+  const ws = ensureSocket();
+  if (!ws) {
+    console.error("auralogger: websocket unavailable; log batch payload:", batch);
+    return;
+  }
+  if (ws.readyState === WebSocket.OPEN) {
+    bumpSocketIdleTimer(ws);
+  }
+
+  let sendPayload = "";
+  try {
+    sendPayload = JSON.stringify(batch);
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error(`auralogger: failed to serialize log batch payload: ${errMsg}`);
+    console.error("auralogger: failed batch payload:", batch);
+    return;
+  }
+  if (ws.readyState === WebSocket.OPEN) {
+    sendServerBatch(ws, sendPayload, batch);
+    return;
+  }
+
+  if (ws.readyState === WebSocket.CONNECTING) {
+    ws.once("open", () => {
+      bumpSocketIdleTimer(ws);
+      sendServerBatch(ws, sendPayload, batch);
+    });
+    ws.once("error", () => {
+      console.warn("auralogger: websocket unavailable while connecting; retrying (2/2)...");
+      if (socket && socket.readyState !== WebSocket.CLOSED) {
+        try {
+          socket.close();
+        } catch {
+          // ignore
+        }
+      }
+      socket = null;
+      socketUrl = null;
+      const retryWs = ensureSocket();
+      if (!retryWs) {
+        console.error("auralogger: websocket unavailable after retry; log batch payload:", batch);
+        return;
+      }
+      if (retryWs.readyState === WebSocket.OPEN) {
+        bumpSocketIdleTimer(retryWs);
+        sendServerBatch(retryWs, sendPayload, batch);
+      }
+    });
+    return;
+  }
+
+  console.error("auralogger: websocket unavailable; log batch payload:", batch);
+}
+
+async function flushBufferedLogsNow(): Promise<void> {
+  if (flushInFlight) {
+    return;
+  }
+  flushInFlight = true;
+  clearFlushTimer();
+  try {
+    while (bufferedLogs.length > 0) {
+      const batch = bufferedLogs.splice(0, BATCH_MAX_SIZE);
+      sendServerLogBatch(batch);
+    }
+  } finally {
+    flushInFlight = false;
+    if (bufferedLogs.length > 0) {
+      scheduleFlush();
+    }
+  }
+}
+
+function scheduleFlush(): void {
+  clearFlushTimer();
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    void flushBufferedLogsNow();
+  }, BATCH_FLUSH_INTERVAL_MS);
+}
+
+function enqueueLogForBatch(payload: LogPayload): void {
+  bufferedLogs.push(payload);
+  if (bufferedLogs.length >= BATCH_MAX_SIZE) {
+    void flushBufferedLogsNow();
+    return;
+  }
+  scheduleFlush();
+}
+
 async function processServerlogAsync(
   type: string,
   message: string,
@@ -337,7 +460,6 @@ async function processServerlogAsync(
   data?: unknown,
 ): Promise<void> {
   ensureNodeEnvLoadedOnce();
-  ensureRuntimeMode();
 
   const payload: LogPayload = {
     type: normalizeType(type),
@@ -361,124 +483,17 @@ async function processServerlogAsync(
     console.error(`auralogger: failed to print log: ${errMsg}`);
   }
 
+  if (!resolvedProjectToken() || !resolvedUserSecret()) {
+    return;
+  }
+
   await ensureHydratedRuntimeConfig();
-  ensureRuntimeMode();
-  const session = getSession();
-  if (session) {
-    payload.session = session;
-  }
-
-  const ws = ensureSocket();
-  if (!ws) {
-    if (!consoleOnlyFallback) {
-      console.error("auralogger: websocket unavailable; log payload:", payload);
-    }
-    return;
-  }
-  if (ws.readyState === WebSocket.OPEN) {
-    bumpSocketIdleTimer(ws);
-  }
-
-  let sendPayload = "";
-  try {
-    sendPayload = JSON.stringify(payload);
-  } catch (error: unknown) {
-    const errMsg = error instanceof Error ? error.message : String(error);
-    console.error(`auralogger: failed to serialize log payload: ${errMsg}`);
-    console.error("auralogger: failed payload:", payload);
-    return;
-  }
-  const retrySendOnce = () => {
-    const retryWs = ensureSocket();
-    if (!retryWs) {
-      console.error("auralogger: websocket unavailable after retry; log payload:", payload);
-      return;
-    }
-    if (retryWs.readyState === WebSocket.OPEN) {
-      bumpSocketIdleTimer(retryWs);
-      retryWs.send(sendPayload, (retryError?: Error) => {
-        if (!retryError) {
-          return;
-        }
-        const sendErr = retryError?.message || String(retryError);
-        console.error(`auralogger: websocket send failed after retry: ${sendErr}`);
-        console.error("auralogger: failed payload:", payload);
-      });
-      return;
-    }
-    retryWs.once("open", () => {
-      bumpSocketIdleTimer(retryWs);
-      retryWs.send(sendPayload, (retryError?: Error) => {
-        if (!retryError) {
-          return;
-        }
-        const sendErr = retryError?.message || String(retryError);
-        console.error(`auralogger: websocket send failed after retry: ${sendErr}`);
-        console.error("auralogger: failed payload:", payload);
-      });
-    });
-  };
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(sendPayload, (error?: Error) => {
-      if (!error) {
-        return;
-      }
-      const sendErr = error?.message || String(error);
-      console.warn(`auralogger: websocket send failed (${sendErr}); retrying (2/2)...`);
-      if (socket && socket.readyState !== WebSocket.CLOSED) {
-        try {
-          socket.close();
-        } catch {
-          // ignore
-        }
-      }
-      socket = null;
-      socketUrl = null;
-      retrySendOnce();
-    });
+  if (!runtimeProjectId || !runtimeSession) {
     return;
   }
 
-  if (ws.readyState === WebSocket.CONNECTING) {
-    ws.once("open", () => {
-      bumpSocketIdleTimer(ws);
-      ws.send(sendPayload, (error?: Error) => {
-        if (!error) {
-          return;
-        }
-        const sendErr = error?.message || String(error);
-        console.warn(`auralogger: websocket send failed (${sendErr}); retrying (2/2)...`);
-        if (socket && socket.readyState !== WebSocket.CLOSED) {
-          try {
-            socket.close();
-          } catch {
-            // ignore
-          }
-        }
-        socket = null;
-        socketUrl = null;
-        retrySendOnce();
-      });
-    });
-    ws.once("error", () => {
-      console.warn("auralogger: websocket unavailable while connecting; retrying (2/2)...");
-      if (socket && socket.readyState !== WebSocket.CLOSED) {
-        try {
-          socket.close();
-        } catch {
-          // ignore
-        }
-      }
-      socket = null;
-      socketUrl = null;
-      retrySendOnce();
-    });
-    return;
-  }
-
-  if (!consoleOnlyFallback) {
-    console.error("auralogger: websocket unavailable; log payload:", payload);
-  }
+  payload.session = runtimeSession;
+  enqueueLogForBatch(payload);
 }
 
 export class AuraServer {
@@ -493,7 +508,7 @@ export class AuraServer {
     }
     hydrateFromSecretPromise = null;
     clearHydratedRuntimeConfig();
-    warnedIncompleteEnv = false;
+    resetBufferedLogs();
     const trimmed = projectToken.trim();
     if (!trimmed) {
       return;
@@ -547,6 +562,7 @@ export class AuraServer {
   }
 
   static async closeSocket(timeoutMs = 1000): Promise<void> {
+    await flushBufferedLogsNow();
     clearSocketIdleTimer();
     if (!socket) {
       return;
