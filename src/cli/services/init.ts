@@ -230,6 +230,7 @@ function buildAuraServerWrapperSnippet(): string {
     `  }`,
     ``,
     `  AuraServer.configure(projectToken, userSecret)`,
+    `  // AuraServer.configure(); // console-only logs to avoid network overhead and costs (use in production).`,
     `  configured = true`,
     `}`,
     ``,
