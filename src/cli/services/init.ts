@@ -181,19 +181,6 @@ function isPlainAuthResponse(value: unknown): value is ProjAuthResponse {
   return value !== null && typeof value === "object";
 }
 
-/** Reminder: onlylocal avoids remote log traffic — especially relevant on deploys. */
-function printOnlylocalProductionDialog(): void {
-  const plainBody = [
-    "Deploying? Set onlylocal in configure for console-only logs.",
-    "No remote sends — no per-log network cost or delay.",
-  ];
-  console.log("");
-  for (const line of plainBody) {
-    console.log("  " + chalk.white(line));
-  }
-  console.log("");
-}
-
 function buildAuraClientWrapperSnippet(): string {
   return [
     `import { AuraClient } from 'auralogger-cli/client'`,
@@ -206,15 +193,12 @@ function buildAuraClientWrapperSnippet(): string {
     ``,
     `  // AuraClient.configure() only needs the project token — never put the user secret in client bundles.`,
     `  // You can also use hardcoded strings instead of env lookups below (avoid committing real values).`,
-    `  // onlylocal (optional 2nd arg): true => console-only; skips per-log remote work (prod log volume = more traffic).`,
-    `  // Set before production deploys when local output is enough — production generates far more log lines than dev.`,
     `  const projectToken = process.env.NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN`,
     `  if (!projectToken) {`,
     `    throw new Error('Missing NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN')`,
     `  }`,
     ``,
     `  AuraClient.configure(projectToken)`,
-    `  // AuraClient.configure(projectToken, true)`,
     `  configured = true`,
     `}`,
     ``,
@@ -236,8 +220,6 @@ function buildAuraServerWrapperSnippet(): string {
     `  if (configured) return`,
     ``,
     `  // You can also pass string literals to AuraServer.configure(...) instead of process.env (never commit real secrets).`,
-    `  // onlylocal (optional 3rd arg): true => console-only; skips remote send path (prod = higher log traffic).`,
-    `  // Use before production when console-only is enough; omit or false when you need remote ingest.`,
     `  const projectToken = process.env.${ENV_PROJECT_TOKEN}`,
     `  if (!projectToken) {`,
     `    throw new Error('Missing ${ENV_PROJECT_TOKEN}')`,
@@ -248,7 +230,6 @@ function buildAuraServerWrapperSnippet(): string {
     `  }`,
     ``,
     `  AuraServer.configure(projectToken, userSecret)`,
-    `  // AuraServer.configure(projectToken, userSecret, true)`,
     `  configured = true`,
     `}`,
     ``,
@@ -498,7 +479,6 @@ function printPostInitSummary(
     userSecret,
   );
 
-  printOnlylocalProductionDialog();
   printTwoAuralogExplainer();
   printInitHelperSnippetsWithCharacterVoices();
 
@@ -539,7 +519,6 @@ function printAlreadyConfiguredSuccess(): void {
     const a = pickAside(INIT_ALREADY_STEVE_ASIDES);
     printAside(a.emoji, a.line);
   }
-  printOnlylocalProductionDialog();
 }
 
 export async function runInit(): Promise<void> {

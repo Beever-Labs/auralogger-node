@@ -1,4 +1,4 @@
-/** One log type’s terminal/UI styling (RGB triples are [r, g, b]). */
+/** One log type's terminal/UI styling (RGB triples are [r, g, b]). */
 export interface LogStyleSpec {
   icon: string;
   "type-color": [number, number, number];
@@ -26,14 +26,66 @@ export interface ProjAuthConfigPayload {
 }
 
 export const DEFAULT_LOG_STYLE_SPEC: LogStyleSpec = {
-  icon: "🗒️",
-  "type-color": [23, 230, 154],
+  icon: "🔹",
+  "type-color": [200, 160, 255],
   background: [0, 0, 0],
   borderColor: [255, 255, 255],
   "location-color": [63, 102, 191],
-  "time-color": [129, 68, 235],
-  "message-color": [235, 68, 210],
-  "text-color": [255, 255, 255],
+  "time-color": [210, 200, 255],
+  "message-color": [220, 200, 255],
+  "text-color": [250, 245, 255],
+};
+
+const BUILTIN_TYPE_STYLE_OVERRIDES: Record<string, Partial<LogStyleSpec>> = {
+  ERROR: {
+    icon: "❌",
+    "type-color": [255, 80, 80],
+    "message-color": [255, 140, 140],
+    "text-color": [255, 255, 255],
+    "time-color": [200, 200, 200],
+  },
+  FAIL: {
+    icon: "💥",
+    "type-color": [255, 40, 120],
+    "message-color": [255, 120, 180],
+    "text-color": [255, 255, 255],
+    "time-color": [200, 200, 200],
+  },
+  SUCCESS: {
+    icon: "✅",
+    "type-color": [0, 255, 200],
+    "message-color": [150, 255, 230],
+    "text-color": [245, 255, 250],
+    "time-color": [200, 255, 230],
+  },
+  PASS: {
+    icon: "✔️",
+    "type-color": [0, 255, 160],
+    "message-color": [140, 255, 210],
+    "text-color": [245, 255, 250],
+    "time-color": [200, 255, 220],
+  },
+  WARNING: {
+    icon: "⚠️",
+    "type-color": [255, 220, 0],
+    "message-color": [255, 240, 120],
+    "text-color": [255, 255, 255],
+    "time-color": [255, 230, 150],
+  },
+  INFO: {
+    icon: "ℹ️",
+    "type-color": [80, 200, 255],
+    "message-color": [160, 230, 255],
+    "text-color": [245, 250, 255],
+    "time-color": [180, 220, 255],
+  },
+  DEFAULT: {
+    icon: "🔹",
+    "type-color": [200, 160, 255],
+    "message-color": [220, 200, 255],
+    "text-color": [250, 245, 255],
+    "time-color": [210, 200, 255],
+  },
 };
 
 const COLOR_KEYS: (keyof LogStyleSpec)[] = [
@@ -48,6 +100,14 @@ const COLOR_KEYS: (keyof LogStyleSpec)[] = [
 
 function cloneDefaultSpec(): LogStyleSpec {
   return JSON.parse(JSON.stringify(DEFAULT_LOG_STYLE_SPEC)) as LogStyleSpec;
+}
+
+function cloneBuiltinStyleMap(): Record<string, LogStyleSpec> {
+  const entries = Object.entries(BUILTIN_TYPE_STYLE_OVERRIDES).map(([type, spec]) => [
+    type,
+    { ...cloneDefaultSpec(), ...spec } as LogStyleSpec,
+  ]);
+  return Object.fromEntries(entries) as Record<string, LogStyleSpec>;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -128,8 +188,7 @@ function normalizeSpecColors(spec: LogStyleSpec, fallback: LogStyleSpec): LogSty
     if (normalized !== undefined) {
       (out as Record<string, unknown>)[key] = normalized;
     } else {
-      const fb =
-        normalizeRgb(fallback[key]) ?? DEFAULT_LOG_STYLE_SPEC[key];
+      const fb = normalizeRgb(fallback[key]) ?? DEFAULT_LOG_STYLE_SPEC[key];
       (out as Record<string, unknown>)[key] = fb;
     }
   }
@@ -200,10 +259,10 @@ export function mapProjAuthTypeStyle(spec: Record<string, unknown>): Record<stri
 
 /**
  * Normalizes `styles` from `POST /api/{project_token}/proj_auth`:
- * - `null` / missing → default-only entries
- * - string → JSON parse then same as object/array
- * - array → {@link buildStyleEntriesFromApi}
- * - object keyed by log type (each value: API shape with `typeColor`, …) → rows for {@link buildStyleEntriesFromApi}
+ * - `null` / missing -> default-only entries
+ * - string -> JSON parse then same as object/array
+ * - array -> {@link buildStyleEntriesFromApi}
+ * - object keyed by log type (each value: API shape with `typeColor`, ...) -> rows for {@link buildStyleEntriesFromApi}
  */
 export function buildStyleEntriesFromProjAuth(
   styles: unknown,
@@ -235,10 +294,10 @@ export function buildStyleEntriesFromProjAuth(
 export function styleMapFromConfigEntries(
   entries: unknown,
 ): Record<string, LogStyleSpec | Record<string, unknown>> {
-  const byType: Record<string, LogStyleSpec | Record<string, unknown>> = {};
+  const byType: Record<string, LogStyleSpec | Record<string, unknown>> = cloneBuiltinStyleMap();
+  byType.default = cloneDefaultSpec();
 
   if (!Array.isArray(entries)) {
-    byType.default = cloneDefaultSpec();
     return byType;
   }
 
@@ -248,6 +307,7 @@ export function styleMapFromConfigEntries(
     for (const [k, v] of Object.entries(item)) {
       if (isPlainObject(v)) {
         byType[k] = v;
+        byType[k.toUpperCase()] = v;
       }
     }
   }
@@ -263,14 +323,11 @@ export function styleMapFromConfigEntries(
  * Resolved spec for a log line: per-type fields merged over `default`, then default alone if unknown type.
  * Color fields are normalized to RGB triples when the merged values are parseable.
  */
-export function resolveLogStyleSpec(logType: string, configStyles: unknown): LogStyleSpec {
+export function resolveLogStyleSpec(logType: string, configStyles?: unknown): LogStyleSpec {
   const map = styleMapFromConfigEntries(configStyles);
   const base = (map.default as LogStyleSpec | undefined) ?? cloneDefaultSpec();
-  const t =
-    typeof logType === "string" && logType.trim() ? logType.trim() : "unknown";
-  const specific = map[t];
-  const merged = !specific
-    ? { ...base }
-    : ({ ...base, ...specific } as LogStyleSpec);
+  const t = typeof logType === "string" ? logType.trim() : "";
+  const specific = map[t] ?? map[t.toUpperCase()] ?? map[t.toLowerCase()] ?? map.DEFAULT;
+  const merged = !specific ? { ...base } : ({ ...base, ...specific } as LogStyleSpec);
   return normalizeSpecColors(merged, base);
 }

@@ -57,7 +57,8 @@ function rgbPaint(rgb: [number, number, number], text: unknown): string {
   }
 }
 
-export function printLog(log: PrintableLogRow, configStyles: unknown): void {
+
+export function printLog(log: PrintableLogRow, configStyles?: unknown): void {
   try {
     const spec = resolveLogStyleSpec(
       typeof log.type === "string" ? log.type : "",

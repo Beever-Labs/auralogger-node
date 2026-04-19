@@ -6,16 +6,7 @@ const STUB_MESSAGE =
  * Prevents importing ws in client builds while keeping the same export name.
  */
 export class AuraServer {
-  static onlylocal: boolean | null = null;
-
-  static configure(
-    _projectToken: string,
-    _userSecret?: string,
-    onlylocal?: boolean | null,
-  ): void {
-    if (onlylocal !== undefined) {
-      AuraServer.onlylocal = onlylocal;
-    }
+  static configure(_projectToken: string, _userSecret?: string): void {
     // no-op in the browser stub
   }
 

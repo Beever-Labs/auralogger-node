@@ -37,11 +37,7 @@ let overrideUserSecret: string | undefined;
 let runtimeProjectId: string | null = null;
 let runtimeSession: string | null = null;
 let runtimeStyles: ProjAuthConfigPayload["styles"] | undefined = undefined;
-let onlyLocal: boolean | null = null;
-
-let consoleOnlyFallback = false;
 let localSessionId: string | null = null;
-let warnedIncompleteEnv = false;
 let socket: WebSocket | null = null;
 let socketUrl: string | null = null;
 let socketIdleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -58,7 +54,6 @@ function applyProjAuthPayload(payload: InitConfigPayload): void {
   runtimeSession = payload.session?.trim() ?? null;
   runtimeStyles = payload.styles;
   localSessionId = null;
-  warnedIncompleteEnv = false;
 }
 
 function clearHydratedRuntimeConfig(): void {
@@ -193,29 +188,6 @@ function resolvedUserSecret(): string | undefined {
   return getResolvedUserSecret();
 }
 
-function serverHasFullConfig(): boolean {
-  if (!resolvedProjectToken() || !resolvedUserSecret()) {
-    return false;
-  }
-  if (!runtimeProjectId) {
-    return false;
-  }
-  if (!runtimeSession) {
-    return false;
-  }
-  return runtimeStyles !== undefined;
-}
-
-function ensureRuntimeMode(): void {
-  consoleOnlyFallback = !serverHasFullConfig();
-  if (consoleOnlyFallback && !warnedIncompleteEnv) {
-    warnedIncompleteEnv = true;
-    console.error(
-      "auralogger: logging to console only. Set AURALOGGER_PROJECT_TOKEN + AURALOGGER_USER_SECRET, then AuraServer auto-loads project id/session/styles from POST /api/{project_token}/proj_auth on the first log (or call AuraServer.syncFromSecret(projectToken, userSecret)).",
-    );
-  }
-}
-
 function getOrCreateLocalSession(): string {
   if (!localSessionId) {
     localSessionId = LOCAL_FALLBACK_SESSION;
@@ -232,13 +204,6 @@ function getUserSecret(): string | null {
 }
 
 
-
-function getSession(): string | null {
-  if (consoleOnlyFallback) {
-    return getOrCreateLocalSession();
-  }
-  return runtimeSession;
-}
 
 function padMicros(microseconds: number): string {
   return String(microseconds).padStart(6, "0");
@@ -313,10 +278,6 @@ function connectSocket(url: string, userSecret: string): WebSocket {
 }
 
 function ensureSocket(): WebSocket | null {
-  if (consoleOnlyFallback) {
-    return null;
-  }
-
   const projectToken = getProjectToken();
   if (!projectToken) {
     console.error(
@@ -402,9 +363,7 @@ function sendServerBatch(
 function sendServerLogBatch(batch: LogPayload[]): void {
   const ws = ensureSocket();
   if (!ws) {
-    if (!consoleOnlyFallback) {
-      console.error("auralogger: websocket unavailable; log batch payload:", batch);
-    }
+    console.error("auralogger: websocket unavailable; log batch payload:", batch);
     return;
   }
   if (ws.readyState === WebSocket.OPEN) {
@@ -454,9 +413,7 @@ function sendServerLogBatch(batch: LogPayload[]): void {
     return;
   }
 
-  if (!consoleOnlyFallback) {
-    console.error("auralogger: websocket unavailable; log batch payload:", batch);
-  }
+  console.error("auralogger: websocket unavailable; log batch payload:", batch);
 }
 
 async function flushBufferedLogsNow(): Promise<void> {
@@ -503,7 +460,6 @@ async function processServerlogAsync(
   data?: unknown,
 ): Promise<void> {
   ensureNodeEnvLoadedOnce();
-  ensureRuntimeMode();
 
   const payload: LogPayload = {
     type: normalizeType(type),
@@ -527,40 +483,32 @@ async function processServerlogAsync(
     console.error(`auralogger: failed to print log: ${errMsg}`);
   }
 
-  if (onlyLocal === true || AuraServer.onlylocal === true) {
+  if (!resolvedProjectToken() || !resolvedUserSecret()) {
     return;
   }
 
   await ensureHydratedRuntimeConfig();
-  ensureRuntimeMode();
-  const session = getSession();
-  if (session) {
-    payload.session = session;
+  if (!runtimeProjectId || !runtimeSession) {
+    return;
   }
 
+  payload.session = runtimeSession;
   enqueueLogForBatch(payload);
 }
 
 export class AuraServer {
-  static onlylocal: boolean | null = null;
-
   /**
    * Configure server logging with project token and optional user secret override.
    * Project id, session, and styles are fetched from `POST /api/{project_token}/proj_auth`.
    */
-  static configure(projectToken: string, userSecret?: string, onlylocal?: boolean | null): void {
+  static configure(projectToken: string, userSecret?: string): void {
     overrideProjectToken = projectToken;
     if (userSecret !== undefined) {
       overrideUserSecret = userSecret;
     }
-    if (onlylocal !== undefined) {
-      onlyLocal = onlylocal;
-      AuraServer.onlylocal = onlylocal;
-    }
     hydrateFromSecretPromise = null;
     clearHydratedRuntimeConfig();
     resetBufferedLogs();
-    warnedIncompleteEnv = false;
     const trimmed = projectToken.trim();
     if (!trimmed) {
       return;

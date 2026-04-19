@@ -54,8 +54,6 @@ let runtimeProjectId: string | null = null;
 let runtimeSession: string | null = null;
 let runtimeStyles: unknown = undefined;
 let hydrateFromSecretPromise: Promise<void> | null = null;
-let onlyLocal: boolean | null = null;
-
 let localSessionId: string | null = null;
 let socket: WebSocketLike | null = null;
 let socketUrl: string | null = null;
@@ -667,25 +665,19 @@ async function processClientlogAsync(
     console.error(`auralogger: failed to print log: ${errMsg}`);
   }
 
-  if (onlyLocal === true || AuraClient.onlylocal === true) {
+  await ensureHydratedRuntimeConfig();
+  if (!getProjectId()) {
     return;
   }
-
-  await ensureHydratedRuntimeConfig();
   payload.session = getSession();
   enqueueLogForBatch(payload);
 }
 
 export class AuraClient {
-  static onlylocal: boolean | null = null;
-
   /**
    * @param projectToken Project token string, or `{ projectToken }` (object form is accepted for convenience).
    */
-  static configure(
-    projectToken: string | { projectToken: unknown; onlylocal?: unknown },
-    onlylocal?: boolean | null,
-  ): void {
+  static configure(projectToken: string | { projectToken: unknown }): void {
     const raw =
       typeof projectToken === "string"
         ? projectToken
@@ -696,16 +688,6 @@ export class AuraClient {
       throw new Error("auralogger: projectToken cannot be empty.");
     }
     overrideProjectToken = token;
-    const resolvedOnlyLocal =
-      onlylocal !== undefined
-        ? onlylocal
-        : typeof projectToken === "object" && projectToken !== null && "onlylocal" in projectToken
-          ? (projectToken.onlylocal as boolean | null)
-          : undefined;
-    if (resolvedOnlyLocal !== undefined) {
-      onlyLocal = resolvedOnlyLocal;
-      AuraClient.onlylocal = resolvedOnlyLocal;
-    }
     hydrateFromSecretPromise = null;
     clearHydratedRuntimeConfig();
     resetBufferedLogs();
