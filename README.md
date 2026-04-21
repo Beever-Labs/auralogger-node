@@ -60,7 +60,42 @@ npx auralogger client-check
 
 ### 4) Send logs from code
 
-Run `**auralogger init**` and paste what it prints, or copy the shapes below. `**Auralog**` is for the browser; `**AuraLog**` is for Node — put each in **its own file** (or repo). *Same energy as the CLI banner: two helpers, two files — don’t cross the streams.*
+Run `**auralogger init**` and paste what it prints, or copy the shapes below.
+
+**Encryption is optional per project.** If your project has **no encryption enabled**, you can use **one centralized logger** (token only) and skip the client/server split entirely. If your project **is encrypted**, keep the split: `**Auralog**` (browser) vs `**AuraLog**` (server).
+
+#### No encryption (recommended first): one import everywhere
+
+Save as e.g. `src/lib/auralog/auralog.ts`:
+
+```ts
+import { auralogger } from "auralogger-cli";
+
+let configured = false;
+
+function ensureConfigured(): void {
+  if (configured) return;
+
+  const projectToken = process.env.AURALOGGER_PROJECT_TOKEN;
+  if (!projectToken) {
+    throw new Error("Missing AURALOGGER_PROJECT_TOKEN");
+  }
+
+  // Token only — no user secret required.
+  auralogger.configure(projectToken);
+  configured = true;
+}
+
+/** Centralized logger — works anywhere, no client/server split needed. */
+export function AuraLog(type: string, message: string, location?: string, data?: unknown): void {
+  ensureConfigured();
+  auralogger.log(type, message, location, data);
+}
+```
+
+#### Encrypted projects: keep client vs server split
+
+*Same energy as the CLI banner: two helpers, two files — don’t cross the streams.*
 
 **Which file is which?**
 
