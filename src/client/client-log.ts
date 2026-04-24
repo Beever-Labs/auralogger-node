@@ -215,19 +215,44 @@ function attachLifecycle(ws: WebSocketLike, url: string): void {
   }
 }
 
+function resolveWebSocketCtor(): (new (u: string) => unknown) | null {
+  const native = (globalThis as { WebSocket?: new (u: string) => unknown }).WebSocket;
+  if (typeof native === "function") return native;
+  // Node fallback: lazy-load `ws` without letting bundlers statically pull it into browser builds.
+  const isNode =
+    typeof process !== "undefined" &&
+    !!(process as { versions?: { node?: string } }).versions?.node;
+  if (!isNode) return null;
+  try {
+    const req = Function("return typeof require === 'function' ? require : null")() as
+      | ((id: string) => unknown)
+      | null;
+    if (!req) return null;
+    const mod = req("ws") as { default?: unknown; WebSocket?: unknown } | (new (u: string) => unknown);
+    const ctor =
+      typeof mod === "function"
+        ? mod
+        : (mod as { WebSocket?: unknown; default?: unknown }).WebSocket ??
+          (mod as { default?: unknown }).default;
+    return typeof ctor === "function" ? (ctor as new (u: string) => unknown) : null;
+  } catch {
+    return null;
+  }
+}
+
 function createWebSocket(url: string): WebSocketLike | null {
-  const Native = (globalThis as { WebSocket?: new (u: string) => unknown }).WebSocket;
-  if (typeof Native !== "function") {
+  const Ctor = resolveWebSocketCtor();
+  if (!Ctor) {
     if (!warnedMissingWebSocket) {
       warnedMissingWebSocket = true;
       console.error(
-        "auralogger: WebSocket is not available. Use Node and set globalThis.WebSocket from the ws package before calling AuraClient.log.",
+        "auralogger: WebSocket is not available. Install `ws` (Node) or run in a browser environment.",
       );
     }
     return null;
   }
   try {
-    return new Native(url) as WebSocketLike;
+    return new Ctor(url) as WebSocketLike;
   } catch (err: unknown) {
     console.error(`auralogger: could not open websocket. ${toErrorMessage(err)}`);
     return null;

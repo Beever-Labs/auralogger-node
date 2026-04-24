@@ -1,4 +1,3 @@
-import WebSocket from "ws";
 import chalk from "chalk";
 
 import { AuraClient } from "../../client/client-log";
@@ -73,18 +72,12 @@ export async function runTestServerlog(): Promise<void> {
 }
 
 export async function runTestClientlog(): Promise<void> {
-  const root = globalThis as typeof globalThis & { WebSocket?: unknown };
-  if (typeof root.WebSocket !== "function") {
-    (root as { WebSocket: typeof WebSocket }).WebSocket = WebSocket;
-  }
-
   console.log(
     chalk.bold.hex("#79c0ff")("🧪 ") +
       chalk.white("Firing the ") +
       chalk.bold.white("client") +
       chalk.white(" logger — 5 test logs, browser flavor."),
   );
-  console.log(chalk.dim("   (Patches in `ws` so Node can fake a browser here.)"));
   {
     const a = pickAside(TEST_CLIENTLOG_START_ASIDES);
     printAside(a.emoji, a.line);
@@ -123,18 +116,12 @@ export async function runTestClientlog(): Promise<void> {
 }
 
 export async function runTestLog(): Promise<void> {
-  const root = globalThis as typeof globalThis & { WebSocket?: unknown };
-  if (typeof root.WebSocket !== "function") {
-    (root as { WebSocket: typeof WebSocket }).WebSocket = WebSocket;
-  }
-
   console.log(
     chalk.bold.hex("#79c0ff")("🧪 ") +
       chalk.white("Firing the ") +
       chalk.bold.white("index") +
       chalk.white(" Auralogger client — 5 test logs, browser flavor."),
   );
-  console.log(chalk.dim("   (Uses the package index export; hits the no-auth browser socket.)"));
   {
     const a = pickAside(TEST_CLIENTLOG_START_ASIDES);
     printAside(a.emoji, a.line);

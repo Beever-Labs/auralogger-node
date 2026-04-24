@@ -1,5 +1,4 @@
 const path = require("node:path");
-const WebSocket = require("ws");
 
 const { DEFAULT_TEST_PROJECT_TOKEN } = require("./harness-defaults.json");
 const { AuraClient } = require(path.resolve(__dirname, "../dist/client.js"));
@@ -12,63 +11,39 @@ const { AuraClient } = require(path.resolve(__dirname, "../dist/client.js"));
  * @property {unknown=} data
  */
 
-function ensureWebSocketPolyfill() {
-  const root = globalThis;
-  if (typeof root.WebSocket !== "function") {
-    root.WebSocket = WebSocket;
-  }
-}
-
 let configured = false;
 
-function resolveProjectToken() {
-  const token =
+function ensureConfigured() {
+  if (configured) return;
+  const projectToken =
     process.env.NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN ||
     process.env.VITE_AURALOGGER_PROJECT_TOKEN ||
     process.env.AURALOGGER_PROJECT_TOKEN ||
     DEFAULT_TEST_PROJECT_TOKEN;
-  return String(token).trim();
+  if (projectToken) {
+    AuraClient.configure(projectToken);
+  } else {
+    console.warn("[Auralogger] Missing project token env; local-only logging enabled.");
+    AuraClient.configure("");
+  }
+  configured = true;
 }
 
-function ensureConfigured() {
-  if (configured) {
-    return;
-  }
-  AuraClient.configure(resolveProjectToken());
-  configured = true;
+function Auralog(params) {
+  ensureConfigured();
+  AuraClient.log(params.type, params.message, params.location, params.data);
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Browser-safe pattern for params; in Node this still only uses the project token from env. */
-function Auralog(params) {
-  ensureWebSocketPolyfill();
-  ensureConfigured();
-  AuraClient.log(params.type, params.message, params.location, params.data);
-}
-
-/**
- * Same shape as cli `runTestClientlog`: patch `ws`, emit a short burst, then close the socket so batches flush.
- * @returns {Promise<void>}
- */
 async function runClientTest() {
-  ensureWebSocketPolyfill();
-  ensureConfigured();
-
-  const clientLogs = [
-    ["info", "client test suite started", "node/tests/client.js", { source: "node-tests", env: "node" }],
-    ["warn", "localStorage quota nearing limit", "node/tests/client.js", { usedKB: 4800, limitKB: 5120 }],
-    ["error", "unhandled promise rejection in fetch", "node/tests/client.js", { url: "/api/data", reason: "NetworkError: Failed to fetch" }],
-    ["debug", "component render cycle complete", "node/tests/client.js", { component: "Dashboard", renderMs: 34, props: { userId: "usr_7" } }],
-    ["info", "client test suite finished", "node/tests/client.js", { logsEmitted: 5 }],
-  ];
-
-  for (const args of clientLogs) {
-    AuraClient.log(...args);
-    await sleep(150);
-  }
+  Auralog({ type: "info", message: "client test suite started", location: "node/tests/client.js", data: { source: "node-tests", env: "node" } });
+  Auralog({ type: "warn", message: "localStorage quota nearing limit", location: "node/tests/client.js", data: { usedKB: 4800, limitKB: 5120 } });
+  Auralog({ type: "error", message: "unhandled promise rejection in fetch", location: "node/tests/client.js", data: { url: "/api/data", reason: "NetworkError: Failed to fetch" } });
+  Auralog({ type: "debug", message: "component render cycle complete", location: "node/tests/client.js", data: { component: "Dashboard", renderMs: 34, props: { userId: "usr_7" } } });
+  Auralog({ type: "info", message: "client test suite finished", location: "node/tests/client.js", data: { logsEmitted: 5 } });
 
   await sleep(800);
   await AuraClient.closeSocket(3000);
