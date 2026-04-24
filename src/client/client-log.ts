@@ -31,8 +31,23 @@ const UNKNOWN_TYPE = "unknown";
 const LOCAL_FALLBACK_SESSION = "auralogger-local-session";
 const BATCH_FLUSH_INTERVAL_MS = 30;
 const BATCH_MAX_SIZE = 30;
+const PROJ_AUTH_RETRY_ATTEMPTS = 3;
+const PROJ_AUTH_RETRY_DELAY_MS = 500;
+
+function isDebugEnabled(): boolean {
+  const g = globalThis as { AURALOGGER_DEBUG?: unknown };
+  if (g.AURALOGGER_DEBUG === true || g.AURALOGGER_DEBUG === "1") return true;
+  if (typeof process !== "undefined" && process.env) {
+    const v = process.env.AURALOGGER_DEBUG;
+    if (typeof v === "string" && v.trim() && v.trim() !== "0" && v.trim().toLowerCase() !== "false") {
+      return true;
+    }
+  }
+  return false;
+}
 
 function trace(event: string, details?: Record<string, unknown>): void {
+  if (!isDebugEnabled()) return;
   if (details) console.log(`auralogger: [AuraClient] ${event}`, details);
   else console.log(`auralogger: [AuraClient] ${event}`);
 }
@@ -49,7 +64,6 @@ let socketIdleTimer: ReturnType<typeof setTimeout> | null = null;
 let batch: LogPayload[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let flushInFlight = false;
-let sendGivenUp = false;
 let warnedMissingWebSocket = false;
 
 const deferTask =
@@ -111,41 +125,35 @@ function isPlainAuthResponse(v: unknown): v is { project_id?: unknown; session?:
   return v !== null && typeof v === "object";
 }
 
-async function fetchProjAuth(token: string): Promise<boolean> {
-  trace("proj_auth.start", { hasToken: !!token });
+async function fetchProjAuthOnce(token: string): Promise<boolean> {
   let response: Response;
   try {
     response = await fetch(buildProjAuthUrl(resolveApiBaseUrl(), token), { method: "POST" });
   } catch (err: unknown) {
-    console.warn(`auralogger: proj_auth unreachable; local-only logging (${toErrorMessage(err)})`);
-    trace("proj_auth.error", { message: toErrorMessage(err) });
-    return false;
+    trace("proj_auth.network_error", { message: toErrorMessage(err) });
+    throw err instanceof Error ? err : new Error(String(err));
   }
   if (!response.ok) {
     const body = await parseErrorBody(response).catch(() => "Request failed.");
-    console.warn(`auralogger: proj_auth failed; local-only logging (${body})`);
-    trace("proj_auth.http_error", { status: response.status });
-    return false;
+    trace("proj_auth.http_error", { status: response.status, body });
+    throw new Error(`proj_auth HTTP ${response.status}: ${body}`);
   }
   let data: unknown;
   try {
     data = await response.json();
   } catch {
-    console.warn("auralogger: proj_auth replied with non-JSON; local-only logging.");
     trace("proj_auth.non_json");
-    return false;
+    throw new Error("proj_auth replied with non-JSON");
   }
   if (!isPlainAuthResponse(data)) {
-    console.warn("auralogger: proj_auth response shape unexpected; local-only logging.");
     trace("proj_auth.bad_shape");
-    return false;
+    throw new Error("proj_auth response shape unexpected");
   }
   const pid = typeof data.project_id === "string" ? data.project_id.trim() : "";
   const sess = typeof data.session === "string" ? data.session.trim() : "";
   if (!pid || !sess) {
-    console.warn("auralogger: proj_auth response missing project id or session; local-only logging.");
     trace("proj_auth.invalid_response", { hasProjectId: !!pid, hasSession: !!sess });
-    return false;
+    throw new Error("proj_auth response missing project id or session");
   }
   session = sess;
   styles = buildStyleEntriesFromProjAuth(data.styles);
@@ -153,15 +161,46 @@ async function fetchProjAuth(token: string): Promise<boolean> {
   return true;
 }
 
+async function fetchProjAuth(token: string): Promise<boolean> {
+  trace("proj_auth.start", { hasToken: !!token });
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= PROJ_AUTH_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await fetchProjAuthOnce(token);
+    } catch (err: unknown) {
+      lastError = err;
+      trace("proj_auth.attempt_failed", {
+        attempt,
+        max: PROJ_AUTH_RETRY_ATTEMPTS,
+        message: toErrorMessage(err),
+      });
+      if (attempt < PROJ_AUTH_RETRY_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, PROJ_AUTH_RETRY_DELAY_MS));
+      }
+    }
+  }
+  console.warn(
+    `auralogger: proj_auth failed after ${PROJ_AUTH_RETRY_ATTEMPTS} attempts; local-only logging (${toErrorMessage(lastError)})`,
+  );
+  return false;
+}
+
 function startProjAuthOnce(): void {
   if (projAuthPromise || !projectToken) return;
   const token = projectToken;
   trace("proj_auth.once.start", { tokenPresent: true });
-  projAuthPromise = fetchProjAuth(token).catch((err) => {
-    console.error(`auralogger: proj_auth failed: ${toErrorMessage(err)}`);
-    trace("proj_auth.once.error", { message: toErrorMessage(err) });
-    return false;
-  });
+  projAuthPromise = fetchProjAuth(token)
+    .catch((err) => {
+      console.error(`auralogger: proj_auth failed: ${toErrorMessage(err)}`);
+      trace("proj_auth.once.error", { message: toErrorMessage(err) });
+      return false;
+    })
+    .then((ok) => {
+      // On failure, clear the cached promise so subsequent log calls can try again
+      // instead of being permanently stuck in local-only mode after a transient failure.
+      if (!ok) projAuthPromise = null;
+      return ok;
+    });
 }
 
 function clearSocketIdleTimer(): void {
@@ -238,39 +277,12 @@ function attachLifecycle(ws: WebSocketLike, url: string): void {
   }
 }
 
-function resolveWebSocketCtor(): (new (u: string) => unknown) | null {
-  const native = (globalThis as { WebSocket?: new (u: string) => unknown }).WebSocket;
-  if (typeof native === "function") return native;
-  // Node fallback: lazy-load `ws` without letting bundlers statically pull it into browser builds.
-  const isNode =
-    typeof process !== "undefined" &&
-    !!(process as { versions?: { node?: string } }).versions?.node;
-  if (!isNode) return null;
-  try {
-    const req = Function("return typeof require === 'function' ? require : null")() as
-      | ((id: string) => unknown)
-      | null;
-    if (!req) return null;
-    const mod = req("ws") as { default?: unknown; WebSocket?: unknown } | (new (u: string) => unknown);
-    const ctor =
-      typeof mod === "function"
-        ? mod
-        : (mod as { WebSocket?: unknown; default?: unknown }).WebSocket ??
-          (mod as { default?: unknown }).default;
-    return typeof ctor === "function" ? (ctor as new (u: string) => unknown) : null;
-  } catch {
-    return null;
-  }
-}
-
 function createWebSocket(url: string): WebSocketLike | null {
-  const Ctor = resolveWebSocketCtor();
-  if (!Ctor) {
+  const Ctor = (globalThis as { WebSocket?: new (u: string) => unknown }).WebSocket;
+  if (typeof Ctor !== "function") {
     if (!warnedMissingWebSocket) {
       warnedMissingWebSocket = true;
-      console.error(
-        "auralogger: WebSocket is not available. Install `ws` (Node) or run in a browser environment.",
-      );
+      console.error("auralogger: WebSocket is not available in this browser environment.");
       trace("socket.missing_websocket_ctor");
     }
     return null;
@@ -288,7 +300,7 @@ function createWebSocket(url: string): WebSocketLike | null {
 function openSocketIfNeeded(): WebSocketLike | null {
   if (!projectToken) return null;
   const { CONNECTING, OPEN, CLOSED } = wsStates();
-  const url = `${resolveWsBaseUrl()}/${encodeURIComponent(projectToken)}/create_browser_logs`;
+  const url = `${resolveWsBaseUrl()}/${projectToken}/create_browser_logs`;
   if (socket && socketUrl === url && (socket.readyState === OPEN || socket.readyState === CONNECTING)) {
     trace("socket.reuse", { readyState: socket.readyState });
     return socket;
@@ -329,11 +341,62 @@ function sendOverSocket(ws: WebSocketLike, payload: string, onErr: (err: unknown
   }
 }
 
+function dropCurrentSocket(): void {
+  const { CLOSED } = wsStates();
+  if (socket && socket.readyState !== CLOSED) {
+    clearSocketIdleTimer();
+    try {
+      socket.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  socket = null;
+  socketUrl = null;
+}
+
+async function sendSerializedOverSocket(
+  ws: WebSocketLike,
+  serialized: string,
+  onErr: (err: unknown) => void,
+): Promise<void> {
+  const { OPEN, CONNECTING } = wsStates();
+  if (ws.readyState === OPEN) {
+    bumpSocketIdleTimer(ws);
+    sendOverSocket(ws, serialized, onErr);
+    trace("send_batch.sent", { mode: "open" });
+    return;
+  }
+  if (ws.readyState === CONNECTING) {
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      socketOnce(ws, "open", () => {
+        bumpSocketIdleTimer(ws);
+        sendOverSocket(ws, serialized, onErr);
+        trace("send_batch.sent", { mode: "connecting->open" });
+        finish();
+      });
+      socketOnce(ws, "error", () => {
+        onErr(new Error("websocket errored while connecting"));
+        finish();
+      });
+      socketOnce(ws, "close", () => {
+        onErr(new Error("websocket closed while connecting"));
+        finish();
+      });
+    });
+    return;
+  }
+  onErr(new Error(`websocket in bad state (readyState=${ws.readyState})`));
+}
+
 async function sendBatch(payloads: LogPayload[]): Promise<boolean> {
   trace("send_batch.start", { count: payloads.length });
-  const { OPEN, CONNECTING } = wsStates();
-  const ws = openSocketIfNeeded();
-  if (!ws) return false;
 
   let serialized: string;
   try {
@@ -344,28 +407,47 @@ async function sendBatch(payloads: LogPayload[]): Promise<boolean> {
     return false;
   }
 
-  const onSendErr = (err: unknown) => {
-    console.error(`auralogger: websocket send failed: ${toErrorMessage(err)}`);
-    trace("send_batch.send_error", { message: toErrorMessage(err) });
-  };
+  const ws = openSocketIfNeeded();
+  if (!ws) return false;
 
-  if (ws.readyState === OPEN) {
-    bumpSocketIdleTimer(ws);
-    sendOverSocket(ws, serialized, onSendErr);
-    trace("send_batch.sent", { mode: "open" });
-    return true;
+  let sendError: unknown = null;
+  await sendSerializedOverSocket(ws, serialized, (err) => {
+    sendError = err;
+  });
+
+  if (!sendError) return true;
+
+  // First attempt failed — rebuild the socket and retry once, matching the
+  // old 2/2 retry behaviour. Don't permanently disable the logger.
+  console.warn(
+    `auralogger: websocket send failed (${toErrorMessage(sendError)}); retrying with fresh socket (2/2)...`,
+  );
+  trace("send_batch.retry.start", { message: toErrorMessage(sendError) });
+  dropCurrentSocket();
+
+  const retryWs = openSocketIfNeeded();
+  if (!retryWs) {
+    console.error("auralogger: websocket unavailable after retry; dropping batch.");
+    trace("send_batch.retry.no_socket");
+    return false;
   }
-  if (ws.readyState === CONNECTING) {
-    socketOnce(ws, "open", () => {
-      bumpSocketIdleTimer(ws);
-      sendOverSocket(ws, serialized, onSendErr);
-      trace("send_batch.sent", { mode: "connecting->open" });
-    });
-    trace("send_batch.queued_until_open");
-    return true;
+
+  let retryError: unknown = null;
+  await sendSerializedOverSocket(retryWs, serialized, (err) => {
+    retryError = err;
+  });
+
+  if (retryError) {
+    console.error(
+      `auralogger: websocket send failed after retry: ${toErrorMessage(retryError)}`,
+    );
+    trace("send_batch.retry.failed", { message: toErrorMessage(retryError) });
+    dropCurrentSocket();
+    return false;
   }
-  trace("send_batch.not_sent_bad_state", { readyState: ws.readyState });
-  return false;
+
+  trace("send_batch.retry.sent");
+  return true;
 }
 
 async function flushNow(): Promise<void> {
@@ -374,17 +456,15 @@ async function flushNow(): Promise<void> {
   clearFlushTimer();
   trace("flush.start", { queued: batch.length });
   try {
-    if (sendGivenUp) {
-      batch = [];
-      trace("flush.given_up_drop_all");
-      return;
-    }
     if (!projAuthPromise) return;
     const ok = await projAuthPromise;
     if (!ok || !session) {
+      // proj_auth failed. Drop the current batch (same as before) but DO NOT
+      // permanently disable the logger — startProjAuthOnce already cleared the
+      // cached promise on failure, so the next log() call will kick off a fresh
+      // proj_auth attempt (which itself has 3 internal retries).
       batch = [];
-      sendGivenUp = true;
-      trace("flush.proj_auth_failed_drop_all", { ok, hasSession: !!session });
+      trace("flush.proj_auth_failed_drop_batch", { ok, hasSession: !!session });
       return;
     }
     const liveSession = session;
@@ -394,10 +474,12 @@ async function flushNow(): Promise<void> {
       trace("flush.slice", { slice: slice.length, remainingBefore: batch.length });
       const sent = await sendBatch(slice);
       if (!sent) {
-        // One attempt, no retry loop. Drop everything and stop until configure() resets.
-        batch = [];
-        sendGivenUp = true;
-        trace("flush.send_failed_drop_all");
+        // Drop the slice we tried to send (best-effort semantics), but keep any
+        // later logs that may have been queued during the send attempt so the
+        // next flush can try them with a fresh socket.
+        batch.splice(0, slice.length);
+        trace("flush.send_failed_drop_slice", { dropped: slice.length, remaining: batch.length });
+        if (batch.length > 0) scheduleFlush();
         return;
       }
       batch.splice(0, slice.length);
@@ -447,7 +529,6 @@ function processLog(type: string, message: string, nowMs: number, location?: str
   }
 
   if (!projectToken) return;
-  if (sendGivenUp) return;
 
   startProjAuthOnce();
 
@@ -480,7 +561,6 @@ export class AuraClient {
     batch = [];
     clearFlushTimer();
     flushInFlight = false;
-    sendGivenUp = false;
     warnedMissingWebSocket = false;
 
     if (!token) {
@@ -497,27 +577,27 @@ export class AuraClient {
   }
 
   static log(type: string, message: string, location?: string, data?: unknown): void {
-    console.log("auralogger: [AuraClient.log] enter", {
+    trace("log.enter", {
       type,
       messageLen: String(message ?? "").length,
       hasLocation: typeof location === "string" && !!location.trim(),
       hasData: data !== null && data !== undefined,
     });
     const nowMs = Date.now();
-    console.log("auralogger: [AuraClient.log] captured timestamp", { nowMs });
+    trace("log.timestamp", { nowMs });
     deferTask(() => {
-      console.log("auralogger: [AuraClient.log] deferred task start");
       try {
-        console.log("auralogger: [AuraClient.log] dispatch -> processLog");
+        trace("log.dispatch.start");
         processLog(type, message, nowMs, location, data);
-        console.log("auralogger: [AuraClient.log] dispatch complete");
+        trace("log.dispatch.done");
       } catch (err: unknown) {
         console.error(`auralogger: log dispatch failed: ${toErrorMessage(err)}`);
+        trace("log.dispatch.error", { message: toErrorMessage(err) });
       } finally {
-        console.log("auralogger: [AuraClient.log] deferred task end");
+        trace("log.dispatch.finally");
       }
     });
-    console.log("auralogger: [AuraClient.log] scheduled deferTask");
+    trace("log.defer_scheduled");
   }
 
   static async closeSocket(timeoutMs = 1000): Promise<void> {
