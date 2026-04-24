@@ -1,5 +1,6 @@
 const path = require("node:path");
 
+const { DEFAULT_TEST_PROJECT_TOKEN } = require("./harness-defaults.json");
 const { AuraServer } = require(path.resolve(__dirname, "../dist/server.js"));
 
 /**
@@ -14,58 +15,43 @@ let configured = false;
 
 function ensureConfigured() {
   if (configured) return;
-
-  // You can also pass string literals to AuraServer.configure(...) instead of process.env (never commit real secrets).
-  const projectToken = "9g/mr4Q0MSxD8Yc0k19WK+B6BLnj0t8nGva1RLD/E4i+7zSMoMpTbCqr9FSZ3Q6fX6o4eUGysUaf5jax";
-  if (!projectToken) {
-    throw new Error("Missing AURALOGGER_PROJECT_TOKEN");
+  const projectToken =
+    process.env.NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN ||
+    process.env.VITE_AURALOGGER_PROJECT_TOKEN ||
+    process.env.AURALOGGER_PROJECT_TOKEN ||
+    DEFAULT_TEST_PROJECT_TOKEN;
+  const userSecret = process.env.AURALOGGER_USER_SECRET || "";
+  if (projectToken && userSecret) {
+    AuraServer.configure(projectToken, userSecret);
+  } else {
+    console.warn("[Auralogger] Missing server credentials env; local-only logging enabled.");
+    AuraServer.configure(projectToken || "", userSecret);
   }
-  const userSecret = "MC4CAQAwBQYDK2VuBCIEIEcy7NQ8x18+heO39XaGWITwOeTCYtoaMsX6jNjlckGI"
-  if (!userSecret) {
-    throw new Error("Missing AURALOGGER_USER_SECRET");
-  }
-
-  AuraServer.configure(projectToken, userSecret);
   configured = true;
 }
 
-/** Server-only: uses project token + user secret from env. Do not import from client components. */
 function AuraLog(params) {
   ensureConfigured();
   AuraServer.log(params.type, params.message, params.location, params.data);
 }
 
-function runServerTest() {
-  AuraLog({
-    type: "info",
-    message: "server test suite started",
-    location: "node/tests/local-server.js:/test",
-    data: { source: "test-api-route", env: "test" },
-  });
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  AuraLog({
-    type: "warn",
-    message: "rate limit threshold approaching",
-    location: "node/tests/local-server.js:/test",
-    data: { currentRate: 480, limit: 500, unit: "req/min" },
-  });
+async function runServerTest() {
+  AuraLog({ type: "info", message: "server test suite started", location: "node/tests/local-server.js:/test", data: { source: "test-api-route", env: "test" } });
+  AuraLog({ type: "warn", message: "rate limit threshold approaching", location: "node/tests/local-server.js:/test", data: { currentRate: 480, limit: 500, unit: "req/min" } });
+  AuraLog({ type: "error", message: "failed to connect to upstream service", location: "node/tests/local-server.js:/test", data: { service: "auth-api", statusCode: 503, retries: 3 } });
+  AuraLog({ type: "debug", message: "request payload parsed successfully", location: "node/tests/local-server.js:/test", data: { userId: "usr_42", action: "login", durationMs: 12 } });
+  AuraLog({ type: "info", message: "server test suite finished", location: "node/tests/local-server.js:/test", data: { logsEmitted: 5 } });
 
-  AuraLog({
-    type: "error",
-    message: "failed to connect to upstream service",
-    location: "node/tests/local-server.js:/test",
-    data: { service: "auth-api", statusCode: 503, retries: 3 },
-  });
-
-  AuraLog({
-    type: "debug",
-    message: "request payload parsed successfully",
-    location: "node/tests/local-server.js:/test",
-    data: { userId: "usr_42", action: "login", durationMs: 12 },
-  });
+  await sleep(800);
+  await AuraServer.closeSocket(3000);
 }
 
 module.exports = {
   AuraLog,
+  AuraServer,
   runServerTest,
 };

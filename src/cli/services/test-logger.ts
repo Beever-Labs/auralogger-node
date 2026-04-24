@@ -1,9 +1,8 @@
-import WebSocket from "ws";
 import chalk from "chalk";
 
 import { AuraClient } from "../../client/client-log";
 import { AuraServer } from "../../server/server-log";
-import { auralogger } from "../..";
+import { Auralogger } from "../..";
 import {
   pickAside,
   pickTestServerlogSuccessAside,
@@ -12,9 +11,18 @@ import {
   TEST_SERVERLOG_START_BANNER_ASIDES,
 } from "../utility/aside-pools";
 import { maybePrintGenericSpice, printAside } from "../utility/cli-tone";
+import { loadCliEnvFiles } from "../utility/cli-load-env";
+import {
+  getResolvedProjectToken,
+  getResolvedUserSecret,
+} from "../../utils/env-config";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function ensureCliEnv(): void {
+  loadCliEnvFiles(process.cwd());
 }
 
 export async function runTestServerlog(): Promise<void> {
@@ -29,6 +37,11 @@ export async function runTestServerlog(): Promise<void> {
     printAside(a.emoji, a.line);
   }
   console.log("");
+
+  ensureCliEnv();
+  const token = getResolvedProjectToken() ?? "";
+  const secret = getResolvedUserSecret() ?? "";
+  AuraServer.configure(token, secret);
 
   const serverLogs: Array<Parameters<typeof AuraServer.log>> = [
     ["info",  "server test suite started",               "cli/test-serverlog", { env: "test", source: "auralogger-cli" }],
@@ -59,23 +72,20 @@ export async function runTestServerlog(): Promise<void> {
 }
 
 export async function runTestClientlog(): Promise<void> {
-  const root = globalThis as typeof globalThis & { WebSocket?: unknown };
-  if (typeof root.WebSocket !== "function") {
-    (root as { WebSocket: typeof WebSocket }).WebSocket = WebSocket;
-  }
-
   console.log(
     chalk.bold.hex("#79c0ff")("🧪 ") +
       chalk.white("Firing the ") +
       chalk.bold.white("client") +
       chalk.white(" logger — 5 test logs, browser flavor."),
   );
-  console.log(chalk.dim("   (Patches in `ws` so Node can fake a browser here.)"));
   {
     const a = pickAside(TEST_CLIENTLOG_START_ASIDES);
     printAside(a.emoji, a.line);
   }
   console.log("");
+
+  ensureCliEnv();
+  AuraClient.configure(getResolvedProjectToken() ?? "");
 
   const clientLogs: Array<Parameters<typeof AuraClient.log>> = [
     ["info",  "client test suite started",                    "cli/test-clientlog", { source: "auralogger-cli", env: "test" }],
@@ -106,25 +116,22 @@ export async function runTestClientlog(): Promise<void> {
 }
 
 export async function runTestLog(): Promise<void> {
-  const root = globalThis as typeof globalThis & { WebSocket?: unknown };
-  if (typeof root.WebSocket !== "function") {
-    (root as { WebSocket: typeof WebSocket }).WebSocket = WebSocket;
-  }
-
   console.log(
     chalk.bold.hex("#79c0ff")("🧪 ") +
       chalk.white("Firing the ") +
       chalk.bold.white("index") +
-      chalk.white(" auralogger client — 5 test logs, browser flavor."),
+      chalk.white(" Auralogger client — 5 test logs, browser flavor."),
   );
-  console.log(chalk.dim("   (Uses the package index export; hits the no-auth browser socket.)"));
   {
     const a = pickAside(TEST_CLIENTLOG_START_ASIDES);
     printAside(a.emoji, a.line);
   }
   console.log("");
 
-  const logs: Array<Parameters<typeof auralogger.log>> = [
+  ensureCliEnv();
+  Auralogger.configure(getResolvedProjectToken() ?? "");
+
+  const logs: Array<Parameters<typeof Auralogger.log>> = [
     ["info",  "test-log suite started",                       "cli/test-log", { source: "auralogger-cli", env: "test" }],
     ["warn",  "localStorage quota nearing limit",             "cli/test-log", { usedKB: 4800, limitKB: 5120 }],
     ["error", "unhandled promise rejection in fetch",         "cli/test-log", { url: "/api/data", reason: "NetworkError: Failed to fetch" }],
@@ -132,12 +139,12 @@ export async function runTestLog(): Promise<void> {
     ["info",  "test-log suite finished",                      "cli/test-log", { logsEmitted: 5 }],
   ];
   for (const args of logs) {
-    auralogger.log(...args);
+    Auralogger.log(...args);
     await sleep(150);
   }
 
   await sleep(800);
-  await auralogger.closeSocket(3000);
+  await Auralogger.closeSocket(3000);
   console.log("");
   console.log(
     chalk.green("✅ ") +
