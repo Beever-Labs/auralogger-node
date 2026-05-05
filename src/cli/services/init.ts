@@ -230,24 +230,36 @@ function buildAuraServerWrapperSnippet(encrypted: boolean): string {
   const serverConfigureBlock = encrypted
     ? [
         `  // You can also pass string literals to AuraServer.configure(...) instead of process.env (never commit real secrets).`,
-        `  const projectToken = process.env.NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN || process.env.VITE_AURALOGGER_PROJECT_TOKEN || process.env.AURALOGGER_PROJECT_TOKEN`,
+        `  const projectToken =`,
+        `    process.env.NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN ||`,
+        `    process.env.VITE_AURALOGGER_PROJECT_TOKEN ||`,
+        `    process.env.AURALOGGER_PROJECT_TOKEN`,
         `  const userSecret = process.env.${ENV_USER_SECRET} || ''`,
+        ``,
+        `  // Silent opt-out: if token/secret are missing, keep local logging only.`,
         `  if (projectToken && userSecret) {`,
         `    AuraServer.configure(projectToken, userSecret)`,
         `  } else {`,
-        `    console.warn('[Auralogger] Missing server credentials env; local-only logging enabled.')`,
+        `    console.warn(`,
+        `      '[Auralogger] Missing server credentials env; local-only logging enabled.',`,
+        `    )`,
         `    AuraServer.configure(projectToken || '', userSecret)`,
         `  }`,
+        `  // use AuraClient.configure() for console only logs in production to remove network costs`,
       ]
     : [
         `  // Non-encrypted flow: AuraServer.configure(projectToken) uses create_browser_logs with no user secret.`,
-        `  const projectToken = process.env.NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN || process.env.VITE_AURALOGGER_PROJECT_TOKEN || process.env.AURALOGGER_PROJECT_TOKEN`,
+        `  const projectToken =`,
+        `    process.env.NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN ||`,
+        `    process.env.VITE_AURALOGGER_PROJECT_TOKEN ||`,
+        `    process.env.AURALOGGER_PROJECT_TOKEN`,
         `  if (projectToken) {`,
         `    AuraServer.configure(projectToken)`,
         `  } else {`,
         `    console.warn('[Auralogger] Missing project token env; local-only logging enabled.')`,
         `    AuraServer.configure('')`,
         `  }`,
+        `  // AuraServer.configure(); // console-only logs to avoid network overhead and costs (use in production).`,
       ];
 
   const serverDoc = encrypted
@@ -255,7 +267,7 @@ function buildAuraServerWrapperSnippet(encrypted: boolean): string {
     : `/** Server-only: uses project token only (non-encrypted flow). Do not import from client components. */`;
 
   return [
-    `import { AuraServer } from 'auralogger-cli'`,
+    `import { AuraServer } from "auralogger-cli"`,
     ``,
     `let configured = false`,
     ``,
@@ -263,7 +275,6 @@ function buildAuraServerWrapperSnippet(encrypted: boolean): string {
     `  if (configured) return`,
     ``,
     ...serverConfigureBlock,
-    `  // AuraServer.configure(); // console-only logs to avoid network overhead and costs (use in production).`,
     `  configured = true`,
     `}`,
     ``,
@@ -272,6 +283,47 @@ function buildAuraServerWrapperSnippet(encrypted: boolean): string {
     `  ensureConfigured()`,
     `  AuraServer.log(type, message, location, data)`,
     `}`,
+  ].join("\n");
+}
+
+function buildPythonAuralogSnippet(encrypted: boolean): string {
+  const ensureConfiguredBody = encrypted
+    ? [
+        `    project_token = os.environ.get('AURALOGGER_PROJECT_TOKEN', '').strip()`,
+        `    user_secret = os.environ.get('AURALOGGER_USER_SECRET', '').strip()`,
+        `    # Silent opt-out: missing creds keep local-only logging.`,
+        `    Auralogger.configure(project_token, user_secret)`,
+        `    # Auralogger.configure()  — omit credentials to print locally only (no streaming for removing network delay and cost).`,
+      ]
+    : [
+        `    project_token = os.environ.get('AURALOGGER_PROJECT_TOKEN', '').strip()`,
+        `    # Silent opt-out: missing creds keep local-only logging.`,
+        `    Auralogger.configure(project_token)`,
+        `    # Auralogger.configure()  — omit credentials to print locally only (no streaming for removing network delay and cost).`,
+      ];
+
+  return [
+    `import os`,
+    `from typing import Any, Dict, Literal, Optional`,
+    ``,
+    `from auralogger import Auralogger`,
+    ``,
+    `def ensureConfigured() -> None:`,
+    ...ensureConfiguredBody,
+    ``,
+    `def auralog(`,
+    `    type: Literal['debug', 'info', 'warn', 'error'],`,
+    `    message: str,`,
+    `    location: Optional[str] = None,`,
+    `    data: Optional[Dict[str, Any]] = None,`,
+    `) -> None:`,
+    `    ensureConfigured()`,
+    `    Auralogger.log(`,
+    `        type,`,
+    `        message,`,
+    `        location,`,
+    `        data,`,
+    `    )`,
   ].join("\n");
 }
 
@@ -372,11 +424,18 @@ function printInitHelperSnippetsWithCharacterVoices(encrypted: boolean): void {
     "Using your generated AuraLog helper (server example logs)",
     buildAuraServerUsageSnippet(),
   );
+  printCodeStory(
+    "Python auralog helper — auralogger package",
+    buildPythonAuralogSnippet(encrypted),
+  );
 }
 
 function styleInitCodeLine(line: string): string {
   if (line.startsWith("import ")) {
     return chalk.hex("#ff7b72")("import") + chalk.hex("#7ee787")(" " + line.slice(7));
+  }
+  if (line.startsWith("from ")) {
+    return chalk.hex("#ff7b72")("from") + chalk.hex("#7ee787")(" " + line.slice(5));
   }
   if (line.startsWith("export type ")) {
     return (
@@ -389,6 +448,9 @@ function styleInitCodeLine(line: string): string {
       chalk.hex("#ff7b72")("export function") +
       chalk.hex("#7ee787")(line.slice("export function".length))
     );
+  }
+  if (line.startsWith("def ")) {
+    return chalk.hex("#ff7b72")("def") + chalk.hex("#7ee787")(line.slice(3));
   }
   return chalk.hex("#7ee787")(line);
 }

@@ -1,6 +1,6 @@
 const path = require("node:path");
 
-const { DEFAULT_TEST_PROJECT_TOKEN } = require("./harness-defaults.json");
+require("dotenv").config({ path: path.resolve(__dirname, "../.env.example") });
 const { AuraServer } = require(path.resolve(__dirname, "../dist/server.js"));
 
 /**
@@ -19,7 +19,7 @@ function ensureConfigured() {
     process.env.NEXT_PUBLIC_AURALOGGER_PROJECT_TOKEN ||
     process.env.VITE_AURALOGGER_PROJECT_TOKEN ||
     process.env.AURALOGGER_PROJECT_TOKEN ||
-    DEFAULT_TEST_PROJECT_TOKEN;
+    "";
   const userSecret = process.env.AURALOGGER_USER_SECRET || "";
   if (projectToken && userSecret) {
     AuraServer.configure(projectToken, userSecret);
@@ -50,8 +50,87 @@ async function runServerTest() {
   await AuraServer.closeSocket(3000);
 }
 
+const TYPES = ["info", "warn", "error", "debug"];
+
+// Burst: large synchronous flood — checks the server SDK doesn't drop under load.
+async function runServerLoadTest(count = 500) {
+  const startedAt = Date.now();
+  AuraLog({ type: "info", message: "server load test started", location: "node/tests/server.js:load", data: { count } });
+
+  for (let i = 0; i < count; i++) {
+    AuraLog({
+      type: TYPES[i % TYPES.length],
+      message: `bulk log ${i + 1}/${count}`,
+      location: "node/tests/server.js:load",
+      data: { i, batch: Math.floor(i / 50), payload: { a: i, b: i * 2, tag: `t${i % 7}` } },
+    });
+  }
+
+  AuraLog({ type: "info", message: "server load test finished", location: "node/tests/server.js:load", data: { count, elapsedMs: Date.now() - startedAt } });
+  await sleep(1500);
+  await AuraServer.closeSocket(5000);
+}
+
+// Logs called from inside async handlers with awaits (mimics request handler shape).
+async function runServerAsyncTest() {
+  AuraLog({ type: "info", message: "server async test started", location: "node/tests/server.js:async", data: { phase: "start" } });
+
+  async function fakeDbQuery(id) {
+    await sleep(20);
+    return { id, rows: [{ id, name: `user_${id}` }] };
+  }
+
+  for (let i = 0; i < 10; i++) {
+    const result = await fakeDbQuery(i);
+    AuraLog({
+      type: "debug",
+      message: "async db query resolved",
+      location: "node/tests/server.js:async",
+      data: { result, i },
+    });
+  }
+
+  await Promise.resolve()
+    .then(() => {
+      AuraLog({ type: "info", message: "from .then chain", location: "node/tests/server.js:async", data: { chained: true } });
+    })
+    .catch(() => {
+      AuraLog({ type: "error", message: "from .catch chain", location: "node/tests/server.js:async", data: { chained: true } });
+    });
+
+  AuraLog({ type: "info", message: "server async test finished", location: "node/tests/server.js:async", data: { phase: "end" } });
+  await sleep(800);
+  await AuraServer.closeSocket(3000);
+}
+
+// Concurrent async handlers — simulates many in-flight requests logging in parallel.
+async function runServerConcurrentAsyncTest(parallel = 25, perTask = 20) {
+  AuraLog({ type: "info", message: "server concurrent async test started", location: "node/tests/server.js:concurrent", data: { parallel, perTask } });
+
+  const tasks = Array.from({ length: parallel }, (_, taskId) => (async () => {
+    for (let i = 0; i < perTask; i++) {
+      await sleep(5 + (taskId % 5));
+      AuraLog({
+        type: TYPES[(taskId + i) % TYPES.length],
+        message: `req ${taskId} step ${i}`,
+        location: "node/tests/server.js:concurrent",
+        data: { taskId, i },
+      });
+    }
+  })());
+
+  await Promise.all(tasks);
+
+  AuraLog({ type: "info", message: "server concurrent async test finished", location: "node/tests/server.js:concurrent", data: { totalLogs: parallel * perTask } });
+  await sleep(1200);
+  await AuraServer.closeSocket(5000);
+}
+
 module.exports = {
   AuraLog,
   AuraServer,
   runServerTest,
+  runServerLoadTest,
+  runServerAsyncTest,
+  runServerConcurrentAsyncTest,
 };

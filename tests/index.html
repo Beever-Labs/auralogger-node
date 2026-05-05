@@ -22,7 +22,7 @@
   <body>
     <h1>Auralogger SDK Runtime Test</h1>
     <p>
-      Default project token comes from <code>tests/harness-defaults.json</code>. Override with
+      Default project token comes from <code>../.env.example</code> (loaded by the Node test harness). Override with
       <code>?projectToken=...</code>, <code>localStorage['AURALOGGER_PROJECT_TOKEN']</code>, or env vars for Node routes.
       For remote <strong>server</strong> logs, set <code>AURALOGGER_USER_SECRET</code> (still required for AuraServer).
       Optional: <code>?auraloggerDebug=1</code> for SDK <code>auralogger:debug</code> lines.
@@ -30,11 +30,23 @@
     <button id="client-log-btn" type="button">Send Client Logs (browser / DevTools)</button>
     <button id="node-client-log-btn" type="button">Send Client Logs (Node + ws, GET /test-client)</button>
     <button id="server-log-btn" type="button">Send Server Logs (GET /test, Node)</button>
+    <hr />
+    <h3>Stress &amp; async (browser)</h3>
+    <button id="client-load-btn" type="button">Burst 500 client logs</button>
+    <button id="client-async-btn" type="button">Async caller (awaits between logs)</button>
+    <button id="client-concurrent-btn" type="button">25 concurrent async tasks × 20 logs</button>
     <p id="status">Ready</p>
 
     <script type="module">
       /* Browser harness: ./client-page.mjs exports runClientTest. Do not import ./client.js (Node CJS / SDK bundle). */
-      import { runClientTest, runNodeClientTest, runServerTest } from "./client-page.mjs";
+      import {
+        runClientTest,
+        runNodeClientTest,
+        runServerTest,
+        runClientLoadTest,
+        runClientAsyncTest,
+        runClientConcurrentAsyncTest,
+      } from "./client-page.mjs";
       const statusEl = document.getElementById("status");
       const clientButton = document.getElementById("client-log-btn");
       const nodeClientButton = document.getElementById("node-client-log-btn");
@@ -79,6 +91,24 @@
           statusEl.textContent = `Node client failed: ${message}`;
         }
       });
+
+      function wireRunner(id, label, runner) {
+        const btn = document.getElementById(id);
+        if (!(btn instanceof HTMLButtonElement)) return;
+        btn.addEventListener("click", async () => {
+          statusEl.textContent = `${label}...`;
+          try {
+            const result = await runner();
+            statusEl.textContent = `${label} done: ${JSON.stringify(result)}`;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            statusEl.textContent = `${label} failed: ${message}`;
+          }
+        });
+      }
+      wireRunner("client-load-btn", "Burst 500 client logs", () => runClientLoadTest(500));
+      wireRunner("client-async-btn", "Async caller", () => runClientAsyncTest());
+      wireRunner("client-concurrent-btn", "Concurrent async tasks", () => runClientConcurrentAsyncTest(25, 20));
     </script>
   </body>
 </html>

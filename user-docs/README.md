@@ -12,6 +12,7 @@ This folder is the **full reference** for when you need exact variable names, co
 
 - **Environment variables (exact names, examples, troubleshooting)**: **[`environment.md`](environment.md)**
 - **CLI command reference (all commands + `get-logs` filter grammar)**: **[`commands.md`](commands.md)**
+- **Debugging workflow (`server-check`, `test-serverlog`, `get-logs`, `npx` / binary fallbacks)**: **[`debug.md`](debug.md)**
 
 ## SDK behavior notes
 

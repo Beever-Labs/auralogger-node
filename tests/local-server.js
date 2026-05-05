@@ -2,8 +2,18 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const url = require("node:url");
-const { runServerTest } = require("./server.js");
-const { runClientTest: runNodeClientTest } = require("./client.js");
+const {
+  runServerTest,
+  runServerLoadTest,
+  runServerAsyncTest,
+  runServerConcurrentAsyncTest,
+} = require("./server.js");
+const {
+  runClientTest: runNodeClientTest,
+  runClientLoadTest: runNodeClientLoadTest,
+  runClientAsyncTest: runNodeClientAsyncTest,
+  runClientConcurrentAsyncTest: runNodeClientConcurrentAsyncTest,
+} = require("./client.js");
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.AURALOGGER_TEST_PORT ?? 4173);
@@ -109,6 +119,34 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    const extraRoutes = {
+      "/test-load": () => runServerLoadTest(Number(parsed.searchParams.get("count")) || undefined),
+      "/test-async": () => runServerAsyncTest(),
+      "/test-concurrent": () => runServerConcurrentAsyncTest(
+        Number(parsed.searchParams.get("parallel")) || undefined,
+        Number(parsed.searchParams.get("perTask")) || undefined,
+      ),
+      "/test-client-load": () => runNodeClientLoadTest(Number(parsed.searchParams.get("count")) || undefined),
+      "/test-client-async": () => runNodeClientAsyncTest(),
+      "/test-client-concurrent": () => runNodeClientConcurrentAsyncTest(
+        Number(parsed.searchParams.get("parallel")) || undefined,
+        Number(parsed.searchParams.get("perTask")) || undefined,
+      ),
+    };
+
+    if (req.method === "GET" && extraRoutes[route]) {
+      void (async () => {
+        try {
+          await extraRoutes[route]();
+          sendJson(res, 200, { ok: true, route, logged: true });
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          sendJson(res, 500, { ok: false, error: msg });
+        }
+      })();
+      return;
+    }
+
     if (req.method !== "GET") {
       sendJson(res, 405, { ok: false, error: "Method not allowed" });
       return;
@@ -124,4 +162,5 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`Auralogger test server running at http://${HOST}:${PORT}`);
   console.log("Open / for the browser harness; GET /test = AuraServer (Node); GET /test-client = AuraClient (Node + ws)");
+  console.log("Stress/async: /test-load, /test-async, /test-concurrent (server) and /test-client-load, /test-client-async, /test-client-concurrent (client)");
 });
