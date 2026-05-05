@@ -165,5 +165,7 @@ main().catch((error: unknown) => {
     printAside(e.emoji, e.line);
   }
   maybePrintGenericSpice();
-  process.exit(1);
+  // On Windows, force-exiting while streams/readline are tearing down can trip libuv asserts.
+  // Prefer a normal exit with an error code once the event loop drains.
+  process.exitCode = 1;
 });

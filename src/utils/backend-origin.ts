@@ -51,12 +51,13 @@ export function resolveWsBaseUrl(): string {
 
 /**
  * `POST /api/{project_token}/proj_auth` — token is embedded raw in the path (no `secret` header).
- * The token may contain base64 characters like `/` and `+` that the server matches literally,
- * so it must NOT be percent-encoded.
+ * The token is ciphertext and may include characters like `/` and `+`.
+ * For HTTP paths it MUST be percent-encoded to remain a single path segment.
  */
 export function buildProjAuthUrl(apiBaseUrl: string, projectToken: string): string {
   const base = trimTrailingSlash(apiBaseUrl.trim());
-  return `${base}/api/${projectToken.trim()}/proj_auth`;
+  const token = encodeURIComponent(projectToken.trim());
+  return `${base}/api/${token}/proj_auth`;
 }
 
 /**
@@ -66,5 +67,6 @@ export function buildProjAuthUrl(apiBaseUrl: string, projectToken: string): stri
  */
 export function buildProjectLogsUrl(apiBaseUrl: string, projectToken: string): string {
   const base = trimTrailingSlash(apiBaseUrl.trim());
-  return `${base}/api/${projectToken.trim()}/logs`;
+  const token = encodeURIComponent(projectToken.trim());
+  return `${base}/api/${token}/logs`;
 }
